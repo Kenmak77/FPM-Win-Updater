@@ -32,6 +32,14 @@ namespace DolphinUpdater
 
             if (File.Exists(dolphinPath))
                 Process.Start(dolphinPath);
+            else
+            {
+                do
+                {
+                    Console.WriteLine("Dolphin.exe not found! Press the enter key to close this application.");
+                } while (Console.ReadKey(true).Key != ConsoleKey.Enter);
+                
+            }
         }
 
         private static async Task DownloadZip(string downloadlink)
