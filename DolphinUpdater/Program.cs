@@ -14,7 +14,7 @@ namespace DolphinUpdater
     class Program
     {
         static WebClient Client = new WebClient();
-        static string updateData = Client.DownloadString("https://raw.githubusercontent.com/Birdthulu/birdthulu.github.io/master/Update.json");
+        static string updateData = Client.DownloadString("https://projectplusgame.com/update.json");
         static dynamic data = JsonConvert.DeserializeObject<dynamic>(updateData);
         static string downloadWindows = data["download-page-windows"].ToString();
         static string currentPath = Directory.GetCurrentDirectory();
@@ -76,7 +76,8 @@ namespace DolphinUpdater
             counter++;
             if (counter % 5500 == 0)
             {
-                Console.WriteLine("Downloaded "
+                Console.Clear();
+                Console.WriteLine("\rDownloaded "
                                   + ((e.BytesReceived / 1024f) / 1024f).ToString("#0.##") + "mb"
                                   + " of "
                                   + ((e.TotalBytesToReceive / 1024f) / 1024f).ToString("#0.##") + "mb"
