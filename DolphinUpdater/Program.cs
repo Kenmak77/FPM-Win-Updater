@@ -1,35 +1,31 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Diagnostics;
 using System.Net;
 using System.IO;
-using System.Text;
 using System.Threading.Tasks;
-using Newtonsoft.Json;
-using Ionic.Zip;
+using ICSharpCode.SharpZipLib.Zip;
 
 namespace DolphinUpdater
 {
     class Program
     {
-        static WebClient Client = new WebClient();
-        static string updateData = Client.DownloadString("https://projectplusgame.com/update.json");
-        static dynamic data = JsonConvert.DeserializeObject<dynamic>(updateData);
-        static string downloadWindows = data["download-page-windows"].ToString();
         static string currentPath = Directory.GetCurrentDirectory();
-        static string path = Directory.GetCurrentDirectory() + "/temp/";
-        static string zipPath = path + "temp.zip";
-        static string dolphinPath = currentPath + "/Dolphin.exe";
+        static string path;
+        static string zipPath;
         private static int counter;
 
         static async Task Main(string[] args)
         {
-            await Task.Run(() => DownloadZip(downloadWindows));
-            ExtractZip();
+            string downloadLink = args[0];
+            path = args[1] + "/temp/";
+            zipPath = path + "temp.zip";
+
+            await Task.Run(() => DownloadZip(downloadLink));
+            ExtractZip(zipPath, currentPath);
 
             Directory.Delete(path, true);
 
+            string dolphinPath = currentPath + "/Dolphin.exe";
             if (File.Exists(dolphinPath))
                 Process.Start(dolphinPath);
             else
@@ -38,7 +34,6 @@ namespace DolphinUpdater
                 {
                     Console.WriteLine("Dolphin.exe not found! Press the enter key to close this application.");
                 } while (Console.ReadKey(true).Key != ConsoleKey.Enter);
-                
             }
         }
 
@@ -57,18 +52,56 @@ namespace DolphinUpdater
             }
         }
 
-        private static void ExtractZip()
+        public static void ExtractZip(string FileZipPath, string OutputFolder)
         {
-            using (ZipFile zip = ZipFile.Read(zipPath))
+            ZipFile file = null;
+            try
             {
-                foreach (ZipEntry e in zip)
+                FileStream fs = File.OpenRead(FileZipPath);
+                file = new ZipFile(fs);
+
+                foreach (ZipEntry zipEntry in file)
                 {
-                    Console.WriteLine("Extracting " + e.FileName);
-                    e.Extract(currentPath, ExtractExistingFileAction.OverwriteSilently);
+                    if (!zipEntry.IsFile)
+                    {
+                        continue;
+                    }
+
+                    String entryFileName = zipEntry.Name;
+                    String entryFileNamePathless = Path.GetFileName(entryFileName);
+
+                    string[] skipFiles = { "dolphin.log", "dolphin.ini" };
+
+                    if (Array.Exists(skipFiles, element => element.Equals(entryFileNamePathless.ToLower())) == true) {}
+                    else
+                    {
+                        Console.WriteLine("Extracting " + entryFileName);
+                        byte[] buffer = new byte[4096];
+                        Stream zipStream = file.GetInputStream(zipEntry);
+
+                        String fullZipToPath = Path.Combine(OutputFolder, entryFileName);
+                        string directoryName = Path.GetDirectoryName(fullZipToPath);
+
+                        if (directoryName.Length > 0)
+                        {
+                            Directory.CreateDirectory(directoryName);
+                        }
+
+                        using (FileStream streamWriter = File.Create(fullZipToPath))
+                        {
+                            ICSharpCode.SharpZipLib.Core.StreamUtils.Copy(zipStream, streamWriter, buffer);
+                        }
+                    }
                 }
             }
-
-            Console.WriteLine("Finished!");
+            finally
+            {
+                if (file != null)
+                {
+                    file.IsStreamOwner = true;
+                    file.Close();
+                }
+            }
         }
 
         private static void client_DownloadProgressChanged(object sender, DownloadProgressChangedEventArgs e)
