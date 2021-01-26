@@ -44,6 +44,7 @@ namespace DolphinUpdater
 
             if (!File.Exists(zipPath))
             {
+                Console.WriteLine("Starting download....");
                 using (var client = new WebClient())
                 {
                     client.DownloadProgressChanged += new DownloadProgressChangedEventHandler(client_DownloadProgressChanged);
