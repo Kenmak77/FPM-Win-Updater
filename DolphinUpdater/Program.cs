@@ -16,6 +16,9 @@ namespace DolphinUpdater
 
         static async Task Main(string[] args)
         {
+            if (args.Length == 0)
+                Environment.Exit(0);
+
             string downloadLink = args[0];
             path = args[1] + "/temp/";
             zipPath = path + "temp.zip";
