@@ -45,14 +45,14 @@ namespace DolphinUpdater
             if (!Directory.Exists(path))
                 Directory.CreateDirectory(path);
 
-            if (!File.Exists(zipPath))
+            if (File.Exists(zipPath))
+                File.Delete(zipPath);
+
+            Console.WriteLine("Starting download....");
+            using (var client = new WebClient())
             {
-                Console.WriteLine("Starting download....");
-                using (var client = new WebClient())
-                {
-                    client.DownloadProgressChanged += new DownloadProgressChangedEventHandler(client_DownloadProgressChanged);
-                    await client.DownloadFileTaskAsync(new Uri(downloadlink), zipPath);
-                }
+                client.DownloadProgressChanged += new DownloadProgressChangedEventHandler(client_DownloadProgressChanged);
+                await client.DownloadFileTaskAsync(new Uri(downloadlink), zipPath);
             }
         }
 
