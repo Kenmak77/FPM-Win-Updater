@@ -74,7 +74,7 @@ namespace DolphinUpdater
                     String entryFileName = zipEntry.Name;
                     String entryFileNamePathless = Path.GetFileName(entryFileName);
 
-                    string[] skipFiles = { "dolphin.log", "dolphin.ini" };
+                    string[] skipFiles = { "dolphin.log", "dolphin.ini", "gfx.ini" };
 
                     if (Array.Exists(skipFiles, element => element.Equals(entryFileNamePathless.ToLower())) == true) {}
                     else
