@@ -3,7 +3,8 @@ using System.Diagnostics;
 using System.Net;
 using System.IO;
 using System.Threading.Tasks;
-using ICSharpCode.SharpZipLib.Zip;
+using System.Linq;
+using Ionic.Zip;
 
 namespace DolphinUpdater
 {
@@ -25,20 +26,25 @@ namespace DolphinUpdater
             tempPath = path + "/temp/";
             zipPath = tempPath + "temp.zip";
 
-            await Task.Run(() => DownloadZip(downloadLink));
-            ExtractZip(zipPath, tempPath);
+            CloseDolphin();
 
             if (File.Exists(zipPath))
                 File.Delete(zipPath);
+
+            await Task.Run(() => DownloadZip(downloadLink));
+            ExtractZip(zipPath, tempPath);
 
             GetDolphinPath();
 
             if (updatedPath == null)
                 updatedPath = tempPath;
 
+            Console.WriteLine("Moving files. Please wait...");
             MoveUpdateFiles(updatedPath, path);
 
             Directory.Delete(tempPath, true);
+
+            Console.WriteLine("Finished! You can close this window if it's still open!");
 
             string dolphinPath = path + "/Dolphin.exe";
             if (File.Exists(dolphinPath))
@@ -50,6 +56,18 @@ namespace DolphinUpdater
                     Console.WriteLine("Dolphin.exe not found! Press the enter key to close this application.");
                 } while (Console.ReadKey(true).Key != ConsoleKey.Enter);
             }
+        }
+
+        private static void CloseDolphin()
+        {
+            System.Diagnostics.Process process = new System.Diagnostics.Process();
+            System.Diagnostics.ProcessStartInfo startInfo = new System.Diagnostics.ProcessStartInfo();
+            startInfo.WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden;
+            startInfo.FileName = "cmd.exe";
+            startInfo.Arguments = "/C taskkill /f /im \"Dolphin.exe\"";
+            process.StartInfo = startInfo;
+            process.Start();
+            process.Close();
         }
 
         private static async Task DownloadZip(string downloadlink)
@@ -70,52 +88,17 @@ namespace DolphinUpdater
 
         public static void ExtractZip(string FileZipPath, string OutputFolder)
         {
-            ZipFile file = null;
-            try
+            using (ZipFile zip = ZipFile.Read(FileZipPath))
             {
-                FileStream fs = File.OpenRead(FileZipPath);
-                file = new ZipFile(fs);
-
-                foreach (ZipEntry zipEntry in file)
+                foreach (ZipEntry e in zip)
                 {
-                    if (!zipEntry.IsFile)
+                    string[] skipFiles = { "dolphin.log", "dolphin.ini", "gfx.ini", "vcruntime140_1.dll", "gckeynew.ini", "gcpadnew.ini", "hotkeys.ini", "logger.ini", "debugger.ini", "wiimotenew.ini" };
+
+                    if (!skipFiles.Any(e.FileName.ToLower().Contains))
                     {
-                        continue;
+                        Console.WriteLine("Extracting " + e.FileName);
+                        e.Extract(OutputFolder, ExtractExistingFileAction.OverwriteSilently);
                     }
-
-                    String entryFileName = zipEntry.Name;
-                    String entryFileNamePathless = Path.GetFileName(entryFileName);
-
-                    string[] skipFiles = { "dolphin.log", "dolphin.ini", "gfx.ini" };
-
-                    if (Array.Exists(skipFiles, element => element.Equals(entryFileNamePathless.ToLower())) == true) {}
-                    else
-                    {
-                        Console.WriteLine("Extracting " + entryFileName);
-                        byte[] buffer = new byte[4096];
-                        Stream zipStream = file.GetInputStream(zipEntry);
-
-                        String fullZipToPath = Path.Combine(OutputFolder, entryFileName);
-                        string directoryName = Path.GetDirectoryName(fullZipToPath);
-
-                        if (directoryName.Length > 0)
-                        {
-                            Directory.CreateDirectory(directoryName);
-                        }
-
-                        using (FileStream streamWriter = File.Create(fullZipToPath))
-                        {
-                            ICSharpCode.SharpZipLib.Core.StreamUtils.Copy(zipStream, streamWriter, buffer);
-                        }
-                    }
-                }
-            }
-            finally
-            {
-                if (file != null)
-                {
-                    file.IsStreamOwner = true;
-                    file.Close();
                 }
             }
         }
