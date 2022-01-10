@@ -167,7 +167,8 @@ namespace DolphinUpdater
                 if (File.Exists(dest))
                     File.Delete(dest);
 
-                File.Copy(file, dest);
+                if (!file.Contains("temp.zip"))
+                    File.Copy(file, dest);
             }
         }
     }
