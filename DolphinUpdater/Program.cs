@@ -70,7 +70,7 @@ namespace DolphinUpdater
             process.Close();
         }
 
-        private static async Task DownloadZip(string downloadlink)
+        private static async Task DownloadZip(string downloadLink)
         {
             if (!Directory.Exists(tempPath))
                 Directory.CreateDirectory(tempPath);
@@ -78,11 +78,37 @@ namespace DolphinUpdater
             if (File.Exists(zipPath))
                 File.Delete(zipPath);
 
-            Console.WriteLine("Starting download....");
+            string zipFileName = Path.GetFileName(zipPath);
+            string zipDir = Path.GetDirectoryName(zipPath);
+
+            // 1. aria2c
+            string aria2Path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "aria2", "aria2c.exe");
+            if (File.Exists(aria2Path))
+            {
+                Console.WriteLine("Download with aria2c...");
+                string arguments = $"-x 16 -s 16 -o \"{zipFileName}\" \"{downloadLink}\"";
+                if (await RunExternalDownloader(aria2Path, arguments, zipDir))
+                    return;
+                Console.WriteLine("aria2c error. Try with rclone...");
+            }
+
+            // 2. rclone
+            string rclonePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "rclone", "rclone.exe");
+            if (File.Exists(rclonePath))
+            {
+                Console.WriteLine("Download with rclone...");
+                string arguments = $"copyurl \"{downloadLink}\" \"{zipFileName}\" --multi-thread-streams=8";
+                if (await RunExternalDownloader(rclonePath, arguments, zipDir))
+                    return;
+                Console.WriteLine("rclone error. try with WebClient...");
+            }
+
+            // 3. WebClient
+            Console.WriteLine("Download via WebClient...");
             using (var client = new WebClient())
             {
                 client.DownloadProgressChanged += new DownloadProgressChangedEventHandler(client_DownloadProgressChanged);
-                await client.DownloadFileTaskAsync(new Uri(downloadlink), zipPath);
+                await client.DownloadFileTaskAsync(new Uri(downloadLink), zipPath);
             }
         }
 
