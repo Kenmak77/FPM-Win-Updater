@@ -70,6 +70,33 @@ namespace DolphinUpdater
             process.Close();
         }
 
+        private static async Task<bool> RunExternalDownloader(string exePath, string arguments, string workingDir)
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = exePath,
+                Arguments = arguments,
+                WorkingDirectory = workingDir,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+
+            using (var process = new Process { StartInfo = psi })
+            {
+                process.OutputDataReceived += (s, e) => { if (e.Data != null) Console.WriteLine(e.Data); };
+                process.ErrorDataReceived += (s, e) => { if (e.Data != null) Console.WriteLine(e.Data); };
+
+                process.Start();
+                process.BeginOutputReadLine();
+                process.BeginErrorReadLine();
+                await process.WaitForExitAsync();
+
+                return process.ExitCode == 0 && File.Exists(Path.Combine(workingDir, Path.GetFileName(zipPath)));
+            }
+        }
+
         private static async Task DownloadZip(string downloadLink)
         {
             if (!Directory.Exists(tempPath))
