@@ -1,4 +1,5 @@
-﻿using System;
+﻿// DolphinUpdater with Scoop install integration and SHA1 hash verification
+using System;
 using System.Diagnostics;
 using System.Net;
 using System.IO;
@@ -28,11 +29,26 @@ namespace DolphinUpdater
 
             CloseDolphin();
 
+            EnsureToolInstalled("aria2c");
+            EnsureToolInstalled("rclone");
+
             if (File.Exists(zipPath))
                 File.Delete(zipPath);
 
             await Task.Run(() => DownloadZip(downloadLink));
             ExtractZip(zipPath, tempPath);
+
+            // Optional: Verify SHA1 hash of zip file (replace with actual expected hash)
+            string expectedHash = "YOUR_EXPECTED_SHA1_HASH_HERE";
+            string actualHash = GetFileSHA1(zipPath);
+            if (actualHash != expectedHash)
+            {
+                Console.WriteLine("⚠️ SHA1 hash mismatch! The downloaded file may be corrupted or tampered with.");
+                Console.WriteLine("Expected: " + expectedHash);
+                Console.WriteLine("Actual:   " + actualHash);
+                Console.WriteLine("Aborting update process.");
+                return;
+            }
 
             GetDolphinPath();
 
@@ -58,13 +74,25 @@ namespace DolphinUpdater
             }
         }
 
+        private static string GetFileSHA1(string filePath)
+        {
+            using (var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read))
+            using (var sha1 = System.Security.Cryptography.SHA1.Create())
+            {
+                byte[] hash = sha1.ComputeHash(fs);
+                return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
+            }
+        }
+
         private static void CloseDolphin()
         {
-            System.Diagnostics.Process process = new System.Diagnostics.Process();
-            System.Diagnostics.ProcessStartInfo startInfo = new System.Diagnostics.ProcessStartInfo();
-            startInfo.WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden;
-            startInfo.FileName = "cmd.exe";
-            startInfo.Arguments = "/C taskkill /f /im \"Dolphin.exe\"";
+            var process = new Process();
+            var startInfo = new ProcessStartInfo
+            {
+                WindowStyle = ProcessWindowStyle.Hidden,
+                FileName = "cmd.exe",
+                Arguments = "/C taskkill /f /im \"Dolphin.exe\""
+            };
             process.StartInfo = startInfo;
             process.Start();
             process.Close();
@@ -92,13 +120,12 @@ namespace DolphinUpdater
                 process.BeginOutputReadLine();
                 process.BeginErrorReadLine();
 
-                await Task.Run(() => process.WaitForExit()); // remplace WaitForExitAsync
+                await Task.Run(() => process.WaitForExit());
 
                 string outputFile = Path.Combine(workingDir, Path.GetFileName(zipPath));
                 return process.ExitCode == 0 && File.Exists(outputFile);
             }
         }
-    
 
         private static async Task DownloadZip(string downloadLink)
         {
@@ -111,29 +138,24 @@ namespace DolphinUpdater
             string zipFileName = Path.GetFileName(zipPath);
             string zipDir = Path.GetDirectoryName(zipPath);
 
-            // 1. aria2c
-            string aria2Path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "aria2", "aria2c.exe");
-            if (File.Exists(aria2Path))
+            string aria2Path = "aria2c";
+            if (File.Exists(aria2Path) || IsToolAvailable("aria2c"))
             {
                 Console.WriteLine("Download with aria2c...");
                 string arguments = $"-x 16 -s 16 -o \"{zipFileName}\" \"{downloadLink}\"";
-                if (await RunExternalDownloader(aria2Path, arguments, zipDir))
-                    return;
+                if (await RunExternalDownloader(aria2Path, arguments, zipDir)) return;
                 Console.WriteLine("aria2c error. Try with rclone...");
             }
 
-            // 2. rclone
-            string rclonePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "rclone", "rclone.exe");
-            if (File.Exists(rclonePath))
+            string rclonePath = "rclone";
+            if (File.Exists(rclonePath) || IsToolAvailable("rclone"))
             {
                 Console.WriteLine("Download with rclone...");
                 string arguments = $"copyurl \"{downloadLink}\" \"{zipFileName}\" --multi-thread-streams=8";
-                if (await RunExternalDownloader(rclonePath, arguments, zipDir))
-                    return;
+                if (await RunExternalDownloader(rclonePath, arguments, zipDir)) return;
                 Console.WriteLine("rclone error. try with WebClient...");
             }
 
-            // 3. WebClient
             Console.WriteLine("Download via WebClient...");
             using (var client = new WebClient())
             {
@@ -142,7 +164,6 @@ namespace DolphinUpdater
             }
         }
 
-
         public static void ExtractZip(string FileZipPath, string OutputFolder)
         {
             using (ZipFile zip = ZipFile.Read(FileZipPath))
@@ -150,7 +171,6 @@ namespace DolphinUpdater
                 foreach (ZipEntry e in zip)
                 {
                     string[] skipFiles = { "dolphin.log", "dolphin.ini", "gfx.ini", "vcruntime140_1.dll", "gckeynew.ini", "gcpadnew.ini", "hotkeys.ini", "logger.ini", "debugger.ini", "wiimotenew.ini" };
-
                     if (!skipFiles.Any(e.FileName.ToLower().Contains))
                     {
                         Console.WriteLine("Extracting " + e.FileName);
@@ -166,12 +186,7 @@ namespace DolphinUpdater
             if (counter % 5500 == 0)
             {
                 Console.Clear();
-                Console.WriteLine("\rDownloaded "
-                                  + ((e.BytesReceived / 1024f) / 1024f).ToString("#0.##") + "mb"
-                                  + " of "
-                                  + ((e.TotalBytesToReceive / 1024f) / 1024f).ToString("#0.##") + "mb"
-                                  + "  (" + e.ProgressPercentage + "%)"
-                    );
+                Console.WriteLine($"\rDownloaded {(e.BytesReceived / 1024f) / 1024f:0.##}mb of {(e.TotalBytesToReceive / 1024f) / 1024f:0.##}mb ({e.ProgressPercentage}%)");
             }
         }
 
@@ -191,16 +206,10 @@ namespace DolphinUpdater
                                 updatedPath = fi.FullName.ToLower().Replace("dolphin.exe", "");
                             }
                         }
-                        catch (UnauthorizedAccessException unAuthFile)
-                        {
-                            Console.WriteLine($"unAuthFile: {unAuthFile.Message}");
-                        }
+                        catch { }
                     }
                 }
-                catch (UnauthorizedAccessException unAuthSubDir)
-                {
-                    Console.WriteLine($"unAuthSubDir: {unAuthSubDir.Message}");
-                }
+                catch { }
             }
         }
 
@@ -226,6 +235,70 @@ namespace DolphinUpdater
 
                 if (!file.Contains("temp.zip"))
                     File.Copy(file, dest);
+            }
+        }
+
+        private static void RunPowerShell(string script)
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                Arguments = $"-NoProfile -ExecutionPolicy Bypass -Command \"{script}\"",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+
+            using (var process = new Process { StartInfo = psi })
+            {
+                process.OutputDataReceived += (s, e) => { if (e.Data != null) Console.WriteLine(e.Data); };
+                process.ErrorDataReceived += (s, e) => { if (e.Data != null) Console.WriteLine(e.Data); };
+                process.Start();
+                process.BeginOutputReadLine();
+                process.BeginErrorReadLine();
+                process.WaitForExit();
+            }
+        }
+
+        private static bool IsToolAvailable(string tool)
+        {
+            try
+            {
+                var psi = new ProcessStartInfo("where", tool)
+                {
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    CreateNoWindow = true
+                };
+
+                using (var process = Process.Start(psi))
+                {
+                    string output = process.StandardOutput.ReadToEnd();
+                    process.WaitForExit();
+                    return !string.IsNullOrWhiteSpace(output);
+                }
+            }
+            catch { return false; }
+        }
+
+        private static void EnsureToolInstalled(string toolName)
+        {
+            if (!IsToolAvailable(toolName))
+            {
+                Console.WriteLine($"{toolName} is not installed. Do you want to install it using Scoop? (y/n)");
+                if (Console.ReadKey(true).Key == ConsoleKey.Y)
+                {
+                    Console.WriteLine($"\nInstalling {toolName} via Scoop...");
+                    var psScript = $@"
+                        if (-not (Get-Command scoop -ErrorAction SilentlyContinue)) {{
+                            Set-ExecutionPolicy RemoteSigned -Scope CurrentUser -Force;
+                            iwr get.scoop.sh -UseBasicParsing | iex;
+                        }}
+                        scoop install {toolName}
+                    ";
+                    RunPowerShell(psScript);
+                }
             }
         }
     }
