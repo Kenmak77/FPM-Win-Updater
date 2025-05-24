@@ -16,6 +16,8 @@ namespace DolphinUpdater
         static string updatedPath;
         static string zipPath;
         private static int counter;
+        static bool allowAria2c = true;
+        static bool allowRclone = true;
 
         static async Task Main(string[] args)
         {
@@ -29,10 +31,12 @@ namespace DolphinUpdater
 
             CloseDolphin();
 
-            EnsureToolInstalled("aria2");
-            EnsureToolInstalled("rclone");
+            if (allowAria2c && IsToolAvailable("aria2"))
+                if (allowRclone && IsToolAvailable("rclone"))
 
-            if (File.Exists(zipPath))
+
+
+                    if (File.Exists(zipPath))
                 File.Delete(zipPath);
 
             await Task.Run(() => DownloadZip(downloadLink));
@@ -300,7 +304,7 @@ namespace DolphinUpdater
             catch { return false; }
         }
 
-        private static void EnsureToolInstalled(string toolName)
+        private static bool EnsureToolInstalled(string toolName)
         {
             if (!IsToolAvailable(toolName))
             {
@@ -309,24 +313,26 @@ namespace DolphinUpdater
                 {
                     Console.WriteLine($"\nInstalling {toolName} via Scoop...");
                     var psScript = $@"
-                        if (-not (Get-Command scoop -ErrorAction SilentlyContinue)) {{
-                            Set-ExecutionPolicy RemoteSigned -Scope CurrentUser -Force;
-                            iwr get.scoop.sh -UseBasicParsing | iex;
-                        }}
-                        scoop install {toolName}
-                    ";
+                if (-not (Get-Command scoop -ErrorAction SilentlyContinue)) {{
+                    Set-ExecutionPolicy RemoteSigned -Scope CurrentUser -Force;
+                    iwr get.scoop.sh -UseBasicParsing | iex;
+                }}
+                scoop install {toolName}
+            ";
                     RunPowerShell(psScript);
+                    return true;
                 }
+                return false;
             }
             else
             {
-                Console.WriteLine($"{toolName} is already installed. Do you want to update it with Scoop? (Faster Download) (y/n)");
+                Console.WriteLine($"{toolName} is already installed. Do you want to update it with Scoop? (y/n)");
                 if (Console.ReadKey(true).Key == ConsoleKey.Y)
                 {
                     Console.WriteLine($"\nUpdating {toolName} via Scoop...");
-                    var psScript = $"scoop update {toolName}";
-                    RunPowerShell(psScript);
+                    RunPowerShell($"scoop update {toolName}");
                 }
+                return true;
             }
         }
     }
