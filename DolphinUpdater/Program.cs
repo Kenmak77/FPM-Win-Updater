@@ -81,10 +81,7 @@ namespace DolphinUpdater
             string zipFileName = Path.GetFileName(zipPath);
             string zipDir = Path.GetDirectoryName(zipPath);
 
-            // aria2
-            if (!IsToolAvailable("aria2c"))
-                AskInstallWithScoop("aria2");
-
+            // aria2c
             if (IsToolAvailable("aria2c"))
             {
                 Console.WriteLine("Downloading with aria2c...");
@@ -104,11 +101,12 @@ namespace DolphinUpdater
                     Console.WriteLine("aria2c failed.");
                 }
             }
+            else
+            {
+                AskInstallWithScoop("aria2");
+            }
 
             // rclone
-            if (!IsToolAvailable("rclone"))
-                AskInstallWithScoop("rclone");
-
             if (IsToolAvailable("rclone"))
             {
                 Console.WriteLine("Downloading with rclone...");
@@ -128,8 +126,12 @@ namespace DolphinUpdater
                     Console.WriteLine("rclone failed.");
                 }
             }
+            else
+            {
+                AskInstallWithScoop("rclone");
+            }
 
-            // fallback WebClient
+            // fallback HTTP
             Console.WriteLine("Downloading with WebClient...");
             using (var client = new WebClient())
             {
@@ -137,6 +139,7 @@ namespace DolphinUpdater
                 await client.DownloadFileTaskAsync(new Uri(downloadlink), zipPath);
             }
         }
+
 
 
         public static void ExtractZip(string FileZipPath, string OutputFolder)
@@ -225,7 +228,7 @@ namespace DolphinUpdater
 
         private static void AskInstallWithScoop(string tool)
         {
-            Console.WriteLine($"{tool} is not installed. Install it using Scoop? (Faster Download) (y/n)");
+            Console.WriteLine($"{tool} is not installed. Install it using Scoop? (y/n)");
             if (Console.ReadKey(true).Key == ConsoleKey.Y)
             {
                 Console.WriteLine($"Installing {tool} via Scoop...");
@@ -243,6 +246,7 @@ namespace DolphinUpdater
                 }
             }
         }
+
 
         private static void MoveUpdateFiles(string updateFilesPath, string destinationPath)
         {
