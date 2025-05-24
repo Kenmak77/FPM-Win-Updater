@@ -29,7 +29,7 @@ namespace DolphinUpdater
 
             CloseDolphin();
 
-            EnsureToolInstalled("aria2c");
+            EnsureToolInstalled("aria2"); 
             EnsureToolInstalled("rclone");
 
             if (File.Exists(zipPath))
@@ -142,7 +142,7 @@ namespace DolphinUpdater
             if (File.Exists(aria2Path) || IsToolAvailable("aria2c"))
             {
                 Console.WriteLine("Download with aria2c...");
-                string arguments = $"-x 16 -s 16 -o \"{zipFileName}\" \"{downloadLink}\"";
+                string arguments = $"copyurl \"{downloadLink}\" \"{zipFileName}\" --multi-thread-streams=8 -P";
                 if (await RunExternalDownloader(aria2Path, arguments, zipDir)) return;
                 Console.WriteLine("aria2c error. Try with rclone...");
             }
@@ -151,7 +151,7 @@ namespace DolphinUpdater
             if (File.Exists(rclonePath) || IsToolAvailable("rclone"))
             {
                 Console.WriteLine("Download with rclone...");
-                string arguments = $"copyurl \"{downloadLink}\" \"{zipFileName}\" --multi-thread-streams=8";
+                string arguments = $"copyurl \"{downloadLink}\" \"{zipFileName}\" --multi-thread-streams=8 -P";
                 if (await RunExternalDownloader(rclonePath, arguments, zipDir)) return;
                 Console.WriteLine("rclone error. try with WebClient...");
             }
@@ -286,7 +286,7 @@ namespace DolphinUpdater
         {
             if (!IsToolAvailable(toolName))
             {
-                Console.WriteLine($"{toolName} is not installed. Do you want to install it using Scoop? (y/n)");
+                Console.WriteLine($"{toolName} is not installed. Do you want to install it using Scoop (Faster Download)? (y/n)");
                 if (Console.ReadKey(true).Key == ConsoleKey.Y)
                 {
                     Console.WriteLine($"\nInstalling {toolName} via Scoop...");
