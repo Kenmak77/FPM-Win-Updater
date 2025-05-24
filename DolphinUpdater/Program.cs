@@ -31,12 +31,10 @@ namespace DolphinUpdater
 
             CloseDolphin();
 
-            if (allowAria2c && IsToolAvailable("aria2"))
-                if (allowRclone && IsToolAvailable("rclone"))
+            allowAria2c = EnsureToolInstalled("aria2");
+            allowRclone = EnsureToolInstalled("rclone");
 
-
-
-                    if (File.Exists(zipPath))
+            if (File.Exists(zipPath))
                 File.Delete(zipPath);
 
             await Task.Run(() => DownloadZip(downloadLink));
@@ -160,21 +158,19 @@ namespace DolphinUpdater
             string zipFileName = Path.GetFileName(zipPath);
             string zipDir = Path.GetDirectoryName(zipPath);
 
-            string aria2Path = "aria2c";
-            if (File.Exists(aria2Path) || IsToolAvailable("aria2"))
+            if (allowAria2c && IsToolAvailable("aria2c"))
             {
                 Console.WriteLine("Download with aria2c...");
                 string arguments = $"-x 16 -s 16 --summary-interval=1 -o \"{zipFileName}\" \"{downloadLink}\"";
-                if (await RunExternalDownloader(aria2Path, arguments, zipDir)) return;
+                if (await RunExternalDownloader("aria2c", arguments, zipDir)) return;
                 Console.WriteLine("aria2c error. Try with rclone...");
             }
 
-            string rclonePath = "rclone";
-            if (File.Exists(rclonePath) || IsToolAvailable("rclone"))
+            if (allowRclone && IsToolAvailable("rclone"))
             {
                 Console.WriteLine("Download with rclone...");
                 string arguments = $"copyurl \"{downloadLink}\" \"{zipFileName}\" --multi-thread-streams=8 -P";
-                if (await RunExternalDownloader(rclonePath, arguments, zipDir)) return;
+                if (await RunExternalDownloader("rclone", arguments, zipDir)) return;
                 Console.WriteLine("rclone error. try with WebClient...");
             }
 
@@ -313,12 +309,12 @@ namespace DolphinUpdater
                 {
                     Console.WriteLine($"\nInstalling {toolName} via Scoop...");
                     var psScript = $@"
-                if (-not (Get-Command scoop -ErrorAction SilentlyContinue)) {{
-                    Set-ExecutionPolicy RemoteSigned -Scope CurrentUser -Force;
-                    iwr get.scoop.sh -UseBasicParsing | iex;
-                }}
-                scoop install {toolName}
-            ";
+                        if (-not (Get-Command scoop -ErrorAction SilentlyContinue)) {{
+                            Set-ExecutionPolicy RemoteSigned -Scope CurrentUser -Force;
+                            iwr get.scoop.sh -UseBasicParsing | iex;
+                        }}
+                        scoop install {toolName}
+                    ";
                     RunPowerShell(psScript);
                     return true;
                 }
