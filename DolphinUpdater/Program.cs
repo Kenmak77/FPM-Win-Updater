@@ -1,4 +1,4 @@
-﻿// DolphinUpdater with aria2c, rclone, fallback + scoop integration and update check
+﻿// DolphinUpdater with aria2c, rclone, fallback + scoop integration and update check (SharpZipLib version)
 using System;
 using System.Diagnostics;
 using System.Net;
@@ -24,8 +24,8 @@ namespace DolphinUpdater
 
             string downloadLink = args[0];
             path = args[1];
-            tempPath = path + "/temp/";
-            zipPath = tempPath + "temp.zip";
+            tempPath = Path.Combine(path, "temp");
+            zipPath = Path.Combine(tempPath, "temp.zip");
 
             CloseDolphin();
 
@@ -50,15 +50,13 @@ namespace DolphinUpdater
 
             Console.WriteLine("Finished! You can close this window if it's still open!");
 
-            string dolphinPath = path + "/Dolphin.exe";
+            string dolphinPath = Path.Combine(path, "Dolphin.exe");
             if (File.Exists(dolphinPath))
                 Process.Start(dolphinPath);
             else
             {
-                do
-                {
-                    Console.WriteLine("Dolphin.exe not found! Press the enter key to close this application.");
-                } while (Console.ReadKey(true).Key != ConsoleKey.Enter);
+                Console.WriteLine("Dolphin.exe not found! Press the enter key to close this application.");
+                while (Console.ReadKey(true).Key != ConsoleKey.Enter) { }
             }
         }
 
@@ -102,16 +100,17 @@ namespace DolphinUpdater
 
         private static void CloseDolphin()
         {
-            var process = new Process();
             var startInfo = new ProcessStartInfo
             {
                 WindowStyle = ProcessWindowStyle.Hidden,
                 FileName = "cmd.exe",
                 Arguments = "/C taskkill /f /im \"Dolphin.exe\""
             };
-            process.StartInfo = startInfo;
-            process.Start();
-            process.Close();
+            using (var process = new Process { StartInfo = startInfo })
+            {
+                process.Start();
+                process.WaitForExit();
+            }
         }
 
         private static async Task DownloadZip(string downloadLink)
@@ -125,11 +124,10 @@ namespace DolphinUpdater
             string zipFileName = Path.GetFileName(zipPath);
             string zipDir = Path.GetDirectoryName(zipPath);
 
-            // aria2c
             if (IsToolAvailable("aria2c"))
             {
                 Console.WriteLine("Downloading with aria2c...");
-                string args = $"-x 16 -s 16 -o \"{zipFileName}\" \"{downloadLink}\"";
+                var args = $"-x 16 -s 16 -o \"{zipFileName}\" \"{downloadLink}\"";
                 var psi = new ProcessStartInfo("aria2c", args)
                 {
                     WorkingDirectory = zipDir,
@@ -150,11 +148,10 @@ namespace DolphinUpdater
                 }
             }
 
-            // rclone
             if (IsToolAvailable("rclone"))
             {
                 Console.WriteLine("Downloading with rclone...");
-                string args = $"copyurl \"{downloadLink}\" \"{zipFileName}\" --multi-thread-streams=8 -P";
+                var args = $"copyurl \"{downloadLink}\" \"{zipFileName}\" --multi-thread-streams=8 -P";
                 var psi = new ProcessStartInfo("rclone", args)
                 {
                     WorkingDirectory = zipDir,
@@ -175,7 +172,6 @@ namespace DolphinUpdater
                 }
             }
 
-            // fallback HTTP
             Console.WriteLine("Downloading with WebClient...");
             using (var client = new WebClient())
             {
@@ -190,12 +186,7 @@ namespace DolphinUpdater
             if (counter % 5500 == 0)
             {
                 Console.Clear();
-                Console.WriteLine("\rDownloaded "
-                                  + ((e.BytesReceived / 1024f) / 1024f).ToString("#0.##") + "mb"
-                                  + " of "
-                                  + ((e.TotalBytesToReceive / 1024f) / 1024f).ToString("#0.##") + "mb"
-                                  + "  (" + e.ProgressPercentage + "%)"
-                    );
+                Console.WriteLine($"\rDownloaded {(e.BytesReceived / 1024f) / 1024f:0.##}mb of {(e.TotalBytesToReceive / 1024f) / 1024f:0.##}mb ({e.ProgressPercentage}%)");
             }
         }
 
@@ -212,7 +203,11 @@ namespace DolphinUpdater
                     if (!string.IsNullOrEmpty(directoryName))
                         Directory.CreateDirectory(directoryName);
 
-                    using (FileStream streamWriter = File.Create(fullZipToPath))
+                    string[] skipFiles = { "dolphin.log", "dolphin.ini", "gfx.ini", "vcruntime140_1.dll", "hotkeys.ini", "logger.ini" };
+                    if (skipFiles.Any(f => entryFileName.ToLower().Contains(f)))
+                        continue;
+
+                    using (var streamWriter = File.Create(fullZipToPath))
                     {
                         byte[] data = new byte[4096];
                         int size;
@@ -251,20 +246,17 @@ namespace DolphinUpdater
         private static void MoveUpdateFiles(string updateFilesPath, string destinationPath)
         {
             if (!Directory.Exists(destinationPath))
-            {
                 Directory.CreateDirectory(destinationPath);
-            }
 
-            foreach (string folder in Directory.GetDirectories(updateFilesPath))
+            foreach (var folder in Directory.GetDirectories(updateFilesPath))
             {
                 string dest = Path.Combine(destinationPath, Path.GetFileName(folder));
                 MoveUpdateFiles(folder, dest);
             }
 
-            foreach (string file in Directory.GetFiles(updateFilesPath))
+            foreach (var file in Directory.GetFiles(updateFilesPath))
             {
                 string dest = Path.Combine(destinationPath, Path.GetFileName(file));
-
                 if (File.Exists(dest))
                     File.Delete(dest);
 
@@ -289,19 +281,10 @@ namespace DolphinUpdater
                     string output = process.StandardOutput.ReadToEnd();
                     process.WaitForExit();
 
-                    Console.WriteLine($"[DEBUG] Checking '{toolExecutable}' availability:\n{output}");
-
-                    return output
-                        .Split(new[] { Environment.NewLine }, StringSplitOptions.RemoveEmptyEntries)
-                        .Any(path => File.Exists(path.Trim()));
+                    return output.Split(new[] { Environment.NewLine }, StringSplitOptions.RemoveEmptyEntries)
+                                 .Any(path => File.Exists(path.Trim()));
                 }
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[ERROR] Tool check failed for '{toolExecutable}': {ex.Message}");
-                return false;
-            }
-        }
             catch { return false; }
         }
     }
