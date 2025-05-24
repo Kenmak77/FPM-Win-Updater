@@ -1,291 +1,430 @@
-﻿// DolphinUpdater with aria2c, rclone, fallback + scoop integration and update check (SharpZipLib version)
-using System;
+﻿using System;
 using System.Diagnostics;
-using System.Net;
 using System.IO;
-using System.Threading.Tasks;
 using System.Linq;
-using ICSharpCode.SharpZipLib.Zip;
+using System.Net.Http;
+using System.Runtime.InteropServices;
+using System.Threading;
+using System.Threading.Tasks;
+using SharpCompress.Archives;
+using SharpCompress.Archives.Zip;
+using SharpCompress.Common;
 
 namespace DolphinUpdater
 {
     class Program
     {
-        static string path;
-        static string tempPath;
-        static string updatedPath;
-        static string zipPath;
-        private static int counter;
+        // Configuration
+        private const int MAX_DOWNLOAD_RETRIES = 3;
+        private const int RETRY_DELAY_MS = 2000;
+        private static readonly string[] PRESERVE_FILES = {
+            "dolphin.log", "dolphin.ini", "gfx.ini", "vcruntime140_1.dll",
+            "gckeynew.ini", "gcpadnew.ini", "hotkeys.ini", "logger.ini",
+            "debugger.ini", "wiimotenew.ini"
+        };
+
+        // State
+        private static string installPath = string.Empty;
+        private static string tempPath = string.Empty;
+        private static string? dolphinPath;
+        private static string zipPath = string.Empty;
+        private static readonly HttpClient httpClient = new HttpClient();
+
+        [DllImport("kernel32.dll")]
+        private static extern bool AttachConsole(int dwProcessId);
 
         static async Task Main(string[] args)
         {
-            if (args.Length == 0)
-                Environment.Exit(0);
+            try
+            {
+                AttachConsole(-1); // Attach to parent console
+                Console.WriteLine("\n=== Dolphin Updater ===");
 
-            string downloadLink = args[0];
-            path = args[1];
-            tempPath = Path.Combine(path, "temp");
-            zipPath = Path.Combine(tempPath, "temp.zip");
+                if (!ValidateArguments(args)) return;
 
-            CloseDolphin();
+                installPath = args[1];
+                tempPath = Path.Combine(installPath, "temp");
+                zipPath = Path.Combine(tempPath, "update.zip");
 
-            await EnsureToolInstalledAndUpdated("aria2");
-            await EnsureToolInstalledAndUpdated("rclone");
+                await RunUpdateProcess(args[0]);
+            }
+            catch (Exception ex)
+            {
+                LogError($"Critical failure: {ex}");
+                ExitWithDelay(5);
+            }
+        }
+
+        private static bool ValidateArguments(string[] args)
+        {
+            if (args.Length < 2)
+            {
+                LogError("Usage: Updater.exe <downloadUrl> <installPath>");
+                return false;
+            }
+
+            if (!Uri.TryCreate(args[0], UriKind.Absolute, out _))
+            {
+                LogError("Invalid download URL format");
+                return false;
+            }
+
+            if (!Directory.Exists(args[1]))
+            {
+                LogError("Install directory does not exist");
+                return false;
+            }
+
+            return true;
+        }
+
+        private static async Task RunUpdateProcess(string downloadUrl)
+        {
+            try
+            {
+                Log("Starting update process...");
+
+                // 1. Close running Dolphin instances
+                CloseDolphin();
+
+                // 2. Prepare temp directory
+                PrepareTempDirectory();
+
+                // 3. Download update package
+                await DownloadUpdatePackage(downloadUrl);
+
+                // 4. Extract update
+                ExtractUpdatePackage();
+
+                // 5. Apply update (preserving config files)
+                ApplyUpdate();
+
+                // 6. Launch Dolphin
+                LaunchDolphin();
+
+                Log("Update completed successfully!");
+            }
+            finally
+            {
+                // 7. Cleanup
+                CleanupTempDirectory();
+            }
+        }
+
+        private static void PrepareTempDirectory()
+        {
+            try
+            {
+                if (Directory.Exists(tempPath))
+                    Directory.Delete(tempPath, true);
+
+                Directory.CreateDirectory(tempPath);
+                Log($"Created temp directory: {tempPath}");
+            }
+            catch (Exception ex)
+            {
+                throw new Exception($"Failed to prepare temp directory: {ex.Message}");
+            }
+        }
+
+        private static async Task DownloadUpdatePackage(string downloadUrl)
+        {
+            Log($"Downloading update from: {downloadUrl}");
 
             if (File.Exists(zipPath))
                 File.Delete(zipPath);
 
-            await DownloadZip(downloadLink);
-            ExtractZip(zipPath, tempPath);
+            // Try aria2c first, then rclone, then fallback to HttpClient
+            if (await TryDownloadWithTool("aria2c", $"-x 16 -s 16 -o \"{Path.GetFileName(zipPath)}\" \"{downloadUrl}\"", tempPath))
+                return;
 
-            GetDolphinPath();
+            if (await TryDownloadWithTool("rclone", $"copyurl \"{downloadUrl}\" \"{Path.GetFileName(zipPath)}\" --multi-thread-streams=8 -P", tempPath))
+                return;
 
-            if (updatedPath == null)
-                updatedPath = tempPath;
+            await DownloadWithHttpClient(downloadUrl, zipPath);
+        }
 
-            Console.WriteLine("Moving files. Please wait...");
-            MoveUpdateFiles(updatedPath, path);
+        private static async Task<bool> TryDownloadWithTool(string toolName, string arguments, string workingDir)
+        {
+            if (!IsToolAvailable(toolName)) return false;
 
-            Directory.Delete(tempPath, true);
+            Log($"Attempting download with {toolName}...");
 
-            Console.WriteLine("Finished! You can close this window if it's still open!");
-
-            string dolphinPath = Path.Combine(path, "Dolphin.exe");
-            if (File.Exists(dolphinPath))
-                Process.Start(dolphinPath);
-            else
+            try
             {
-                Console.WriteLine("Dolphin.exe not found! Press the enter key to close this application.");
-                while (Console.ReadKey(true).Key != ConsoleKey.Enter) { }
+                using var process = new Process
+                {
+                    StartInfo = new ProcessStartInfo
+                    {
+                        FileName = toolName,
+                        Arguments = arguments,
+                        WorkingDirectory = workingDir,
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        CreateNoWindow = true
+                    }
+                };
+
+                process.OutputDataReceived += (s, e) => Log($"[{toolName}] {e.Data}");
+                process.ErrorDataReceived += (s, e) => Log($"[{toolName} ERROR] {e.Data}");
+
+                process.Start();
+                process.BeginOutputReadLine();
+                process.BeginErrorReadLine();
+
+                await process.WaitForExitAsync();
+
+                if (File.Exists(zipPath))
+                {
+                    Log($"Download succeeded using {toolName}");
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"Download with {toolName} failed: {ex.Message}");
+            }
+
+            return false;
+        }
+
+        private static async Task DownloadWithHttpClient(string url, string outputPath)
+        {
+            Log("Falling back to HttpClient...");
+
+            int retryCount = 0;
+            while (retryCount < MAX_DOWNLOAD_RETRIES)
+            {
+                try
+                {
+                    using var response = await httpClient.GetAsync(url);
+                    response.EnsureSuccessStatusCode();
+
+                    await using var stream = await response.Content.ReadAsStreamAsync();
+                    await using var fileStream = File.Create(outputPath);
+                    await stream.CopyToAsync(fileStream);
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    retryCount++;
+                    if (retryCount == MAX_DOWNLOAD_RETRIES)
+                        throw new Exception($"Download failed after {MAX_DOWNLOAD_RETRIES} attempts: {ex.Message}");
+
+                    Log($"Attempt {retryCount} failed, retrying in {RETRY_DELAY_MS / 1000} seconds...");
+                    await Task.Delay(RETRY_DELAY_MS);
+                }
             }
         }
 
-        private static async Task EnsureToolInstalledAndUpdated(string tool)
+        private static void ExtractUpdatePackage()
         {
-            if (!IsToolAvailable(tool))
+            Log("Extracting update package...");
+
+            try
             {
-                Console.WriteLine($"{tool} is not installed. Install it using Scoop? (Faster Download) (y/n)");
-                if (Console.ReadKey(true).Key == ConsoleKey.Y)
+                using var archive = ZipArchive.Open(zipPath);
+                foreach (var entry in archive.Entries.Where(e => !e.IsDirectory))
                 {
-                    Console.WriteLine($"Installing {tool} via Scoop...");
-                    await RunPowerShell($"if (-not (Get-Command scoop -ErrorAction SilentlyContinue)) {{ iwr get.scoop.sh -UseBasicParsing | iex }}; scoop install {tool}");
+                    if (PRESERVE_FILES.Any(f => entry.Key?.Contains(f, StringComparison.OrdinalIgnoreCase) ?? false))
+                    {
+                        Log($"Skipping preserved file: {entry.Key}");
+                        continue;
+                    }
+
+                    Log($"Extracting: {entry.Key}");
+                    entry.WriteToDirectory(tempPath, new ExtractionOptions
+                    {
+                        ExtractFullPath = true,
+                        Overwrite = true
+                    });
                 }
             }
-            else
+            catch (Exception ex)
             {
-                Console.WriteLine($"{tool} is already installed. Update it with Scoop? (y/n)");
-                if (Console.ReadKey(true).Key == ConsoleKey.Y)
-                {
-                    Console.WriteLine($"Updating {tool} via Scoop...");
-                    await RunPowerShell($"scoop update {tool}");
-                }
+                throw new Exception($"Failed to extract update package: {ex.Message}");
             }
         }
 
-        private static async Task RunPowerShell(string command)
+        private static void ApplyUpdate()
         {
-            var ps = new ProcessStartInfo("powershell", $"-NoProfile -ExecutionPolicy Bypass -Command \"{command}\"")
-            {
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true
-            };
+            Log("Applying update...");
 
-            using (var proc = Process.Start(ps))
+            // Find the actual Dolphin folder in the extracted files
+            dolphinPath = FindDolphinPath() ?? tempPath;
+
+            try
             {
-                await Task.Run(() => proc.WaitForExit());
+                // Copy all files except preserved ones
+                foreach (var sourceFile in Directory.GetFiles(dolphinPath))
+                {
+                    var fileName = Path.GetFileName(sourceFile);
+                    if (PRESERVE_FILES.Contains(fileName, StringComparer.OrdinalIgnoreCase))
+                        continue;
+
+                    var destFile = Path.Combine(installPath, fileName);
+
+                    if (File.Exists(destFile))
+                        File.Delete(destFile);
+
+                    File.Copy(sourceFile, destFile);
+                    Log($"Updated: {fileName}");
+                }
+
+                // Copy directories recursively
+                foreach (var sourceDir in Directory.GetDirectories(dolphinPath))
+                {
+                    var dirName = Path.GetFileName(sourceDir);
+                    var destDir = Path.Combine(installPath, dirName);
+
+                    CopyDirectory(sourceDir, destDir);
+                    Log($"Updated directory: {dirName}");
+                }
+            }
+            catch (Exception ex)
+            {
+                throw new Exception($"Failed to apply update: {ex.Message}");
+            }
+        }
+
+        private static string? FindDolphinPath()
+        {
+            try
+            {
+                foreach (var file in Directory.EnumerateFiles(tempPath, "dolphin.exe", SearchOption.AllDirectories))
+                    return Path.GetDirectoryName(file);
+            }
+            catch (Exception ex)
+            {
+                Log($"Warning: Could not locate Dolphin.exe in package: {ex.Message}");
+            }
+
+            return null;
+        }
+
+        private static void CopyDirectory(string sourceDir, string targetDir)
+        {
+            Directory.CreateDirectory(targetDir);
+
+            foreach (var file in Directory.GetFiles(sourceDir))
+            {
+                File.Copy(file, Path.Combine(targetDir, Path.GetFileName(file)), true);
+            }
+
+            foreach (var directory in Directory.GetDirectories(sourceDir))
+            {
+                CopyDirectory(directory, Path.Combine(targetDir, Path.GetFileName(directory)));
+            }
+        }
+
+        private static void LaunchDolphin()
+        {
+            var dolphinExe = Path.Combine(installPath, "Dolphin.exe");
+            if (!File.Exists(dolphinExe))
+            {
+                LogError("Dolphin.exe not found after update!");
+                return;
+            }
+
+            try
+            {
+                Log("Launching Dolphin...");
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = dolphinExe,
+                    WorkingDirectory = installPath,
+                    UseShellExecute = true
+                });
+            }
+            catch (Exception ex)
+            {
+                LogError($"Failed to launch Dolphin: {ex.Message}");
             }
         }
 
         private static void CloseDolphin()
         {
-            var startInfo = new ProcessStartInfo
+            try
             {
-                WindowStyle = ProcessWindowStyle.Hidden,
-                FileName = "cmd.exe",
-                Arguments = "/C taskkill /f /im \"Dolphin.exe\""
-            };
-            using (var process = new Process { StartInfo = startInfo })
-            {
+                Log("Closing any running Dolphin instances...");
+                using var process = new Process
+                {
+                    StartInfo = new ProcessStartInfo
+                    {
+                        FileName = "taskkill",
+                        Arguments = "/f /im Dolphin.exe",
+                        CreateNoWindow = true,
+                        WindowStyle = ProcessWindowStyle.Hidden
+                    }
+                };
                 process.Start();
                 process.WaitForExit();
+                Thread.Sleep(1000); // Wait for process to fully terminate
+            }
+            catch (Exception ex)
+            {
+                Log($"Warning: Could not close Dolphin: {ex.Message}");
             }
         }
 
-        private static async Task DownloadZip(string downloadLink)
-        {
-            if (!Directory.Exists(tempPath))
-                Directory.CreateDirectory(tempPath);
-
-            if (File.Exists(zipPath))
-                File.Delete(zipPath);
-
-            string zipFileName = Path.GetFileName(zipPath);
-            string zipDir = Path.GetDirectoryName(zipPath);
-
-            if (IsToolAvailable("aria2c"))
-            {
-                Console.WriteLine("Downloading with aria2c...");
-                var args = $"-x 16 -s 16 -o \"{zipFileName}\" \"{downloadLink}\"";
-                var psi = new ProcessStartInfo("aria2c", args)
-                {
-                    WorkingDirectory = zipDir,
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    CreateNoWindow = true
-                };
-                using (var process = Process.Start(psi))
-                {
-                    process.OutputDataReceived += (s, e) => { if (e.Data != null) Console.WriteLine(e.Data); };
-                    process.ErrorDataReceived += (s, e) => { if (e.Data != null) Console.WriteLine(e.Data); };
-                    process.BeginOutputReadLine();
-                    process.BeginErrorReadLine();
-                    await Task.Run(() => process.WaitForExit());
-                    if (File.Exists(zipPath)) return;
-                    Console.WriteLine("aria2c failed.");
-                }
-            }
-
-            if (IsToolAvailable("rclone"))
-            {
-                Console.WriteLine("Downloading with rclone...");
-                var args = $"copyurl \"{downloadLink}\" \"{zipFileName}\" --multi-thread-streams=8 -P";
-                var psi = new ProcessStartInfo("rclone", args)
-                {
-                    WorkingDirectory = zipDir,
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    CreateNoWindow = true
-                };
-                using (var process = Process.Start(psi))
-                {
-                    process.OutputDataReceived += (s, e) => { if (e.Data != null) Console.WriteLine(e.Data); };
-                    process.ErrorDataReceived += (s, e) => { if (e.Data != null) Console.WriteLine(e.Data); };
-                    process.BeginOutputReadLine();
-                    process.BeginErrorReadLine();
-                    await Task.Run(() => process.WaitForExit());
-                    if (File.Exists(zipPath)) return;
-                    Console.WriteLine("rclone failed.");
-                }
-            }
-
-            Console.WriteLine("Downloading with WebClient...");
-            using (var client = new WebClient())
-            {
-                client.DownloadProgressChanged += new DownloadProgressChangedEventHandler(client_DownloadProgressChanged);
-                await client.DownloadFileTaskAsync(new Uri(downloadLink), zipPath);
-            }
-        }
-
-        private static void client_DownloadProgressChanged(object sender, DownloadProgressChangedEventArgs e)
-        {
-            counter++;
-            if (counter % 5500 == 0)
-            {
-                Console.Clear();
-                Console.WriteLine($"\rDownloaded {(e.BytesReceived / 1024f) / 1024f:0.##}mb of {(e.TotalBytesToReceive / 1024f) / 1024f:0.##}mb ({e.ProgressPercentage}%)");
-            }
-        }
-
-        public static void ExtractZip(string fileZipPath, string outputFolder)
-        {
-            using (var zipInputStream = new ZipInputStream(File.OpenRead(fileZipPath)))
-            {
-                ZipEntry entry;
-                while ((entry = zipInputStream.GetNextEntry()) != null)
-                {
-                    string entryFileName = entry.Name;
-                    string fullZipToPath = Path.Combine(outputFolder, entryFileName);
-                    string directoryName = Path.GetDirectoryName(fullZipToPath);
-                    if (!string.IsNullOrEmpty(directoryName))
-                        Directory.CreateDirectory(directoryName);
-
-                    string[] skipFiles = { "dolphin.log", "dolphin.ini", "gfx.ini", "vcruntime140_1.dll", "hotkeys.ini", "logger.ini" };
-                    if (skipFiles.Any(f => entryFileName.ToLower().Contains(f)))
-                        continue;
-
-                    using (var streamWriter = File.Create(fullZipToPath))
-                    {
-                        byte[] data = new byte[4096];
-                        int size;
-                        while ((size = zipInputStream.Read(data, 0, data.Length)) > 0)
-                        {
-                            streamWriter.Write(data, 0, size);
-                        }
-                    }
-                }
-            }
-        }
-
-        private static void GetDolphinPath()
-        {
-            DirectoryInfo diTop = new DirectoryInfo(tempPath);
-            foreach (var di in diTop.EnumerateDirectories("*"))
-            {
-                try
-                {
-                    foreach (var fi in di.EnumerateFiles("*", SearchOption.AllDirectories))
-                    {
-                        try
-                        {
-                            if (fi.Name.ToLower() == "dolphin.exe")
-                            {
-                                updatedPath = fi.FullName.ToLower().Replace("dolphin.exe", "");
-                            }
-                        }
-                        catch { }
-                    }
-                }
-                catch { }
-            }
-        }
-
-        private static void MoveUpdateFiles(string updateFilesPath, string destinationPath)
-        {
-            if (!Directory.Exists(destinationPath))
-                Directory.CreateDirectory(destinationPath);
-
-            foreach (var folder in Directory.GetDirectories(updateFilesPath))
-            {
-                string dest = Path.Combine(destinationPath, Path.GetFileName(folder));
-                MoveUpdateFiles(folder, dest);
-            }
-
-            foreach (var file in Directory.GetFiles(updateFilesPath))
-            {
-                string dest = Path.Combine(destinationPath, Path.GetFileName(file));
-                if (File.Exists(dest))
-                    File.Delete(dest);
-
-                if (!file.Contains("temp.zip"))
-                    File.Copy(file, dest);
-            }
-        }
-
-        private static bool IsToolAvailable(string toolExecutable)
+        private static void CleanupTempDirectory()
         {
             try
             {
-                var psi = new ProcessStartInfo("where", toolExecutable)
+                if (Directory.Exists(tempPath))
                 {
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    CreateNoWindow = true
-                };
-
-                using (var process = Process.Start(psi))
-                {
-                    string output = process.StandardOutput.ReadToEnd();
-                    process.WaitForExit();
-
-                    return output.Split(new[] { Environment.NewLine }, StringSplitOptions.RemoveEmptyEntries)
-                                 .Any(path => File.Exists(path.Trim()));
+                    Log("Cleaning up temporary files...");
+                    Directory.Delete(tempPath, true);
                 }
             }
-            catch { return false; }
+            catch (Exception ex)
+            {
+                Log($"Warning: Could not clean up temp directory: {ex.Message}");
+            }
+        }
+
+        private static bool IsToolAvailable(string tool)
+        {
+            try
+            {
+                using var process = Process.Start(new ProcessStartInfo
+                {
+                    FileName = "where",
+                    Arguments = tool,
+                    RedirectStandardOutput = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                });
+
+                if (process == null) return false;
+
+                var output = process.StandardOutput.ReadToEnd();
+                process.WaitForExit();
+
+                return !string.IsNullOrEmpty(output);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void Log(string message)
+        {
+            Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] {message}");
+        }
+
+        private static void LogError(string message)
+        {
+            Console.Error.WriteLine($"[{DateTime.Now:HH:mm:ss}] ERROR: {message}");
+        }
+
+        private static void ExitWithDelay(int seconds)
+        {
+            Log($"Closing in {seconds} seconds...");
+            Thread.Sleep(seconds * 1000);
+            Environment.Exit(1);
         }
     }
 }
