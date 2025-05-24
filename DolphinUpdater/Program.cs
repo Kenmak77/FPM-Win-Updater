@@ -96,23 +96,25 @@ namespace DolphinUpdater
 
             using (var proc = Process.Start(ps))
             {
-                await Task.Run(() => proc.WaitForExit()); ;
+                await Task.Run(() => proc.WaitForExit());
             }
         }
 
         private static void CloseDolphin()
         {
-            System.Diagnostics.Process process = new System.Diagnostics.Process();
-            System.Diagnostics.ProcessStartInfo startInfo = new System.Diagnostics.ProcessStartInfo();
-            startInfo.WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden;
-            startInfo.FileName = "cmd.exe";
-            startInfo.Arguments = "/C taskkill /f /im \"Dolphin.exe\"";
+            var process = new Process();
+            var startInfo = new ProcessStartInfo
+            {
+                WindowStyle = ProcessWindowStyle.Hidden,
+                FileName = "cmd.exe",
+                Arguments = "/C taskkill /f /im \"Dolphin.exe\""
+            };
             process.StartInfo = startInfo;
             process.Start();
             process.Close();
         }
 
-        private static async Task DownloadZip(string downloadlink)
+        private static async Task DownloadZip(string downloadLink)
         {
             if (!Directory.Exists(tempPath))
                 Directory.CreateDirectory(tempPath);
@@ -127,7 +129,7 @@ namespace DolphinUpdater
             if (IsToolAvailable("aria2c"))
             {
                 Console.WriteLine("Downloading with aria2c...");
-                string args = $"-x 16 -s 16 -o \"{zipFileName}\" \"{downloadlink}\"";
+                string args = $"-x 16 -s 16 -o \"{zipFileName}\" \"{downloadLink}\"";
                 var psi = new ProcessStartInfo("aria2c", args)
                 {
                     WorkingDirectory = zipDir,
@@ -138,21 +140,21 @@ namespace DolphinUpdater
                 };
                 using (var process = Process.Start(psi))
                 {
-                    process.WaitForExit();
+                    process.OutputDataReceived += (s, e) => { if (e.Data != null) Console.WriteLine(e.Data); };
+                    process.ErrorDataReceived += (s, e) => { if (e.Data != null) Console.WriteLine(e.Data); };
+                    process.BeginOutputReadLine();
+                    process.BeginErrorReadLine();
+                    await Task.Run(() => process.WaitForExit());
                     if (File.Exists(zipPath)) return;
                     Console.WriteLine("aria2c failed.");
                 }
-            }
-            else
-            {
-                AskInstallWithScoop("aria2");
             }
 
             // rclone
             if (IsToolAvailable("rclone"))
             {
                 Console.WriteLine("Downloading with rclone...");
-                string args = $"copyurl \"{downloadlink}\" \"{zipFileName}\" --multi-thread-streams=8 -P";
+                string args = $"copyurl \"{downloadLink}\" \"{zipFileName}\" --multi-thread-streams=8 -P";
                 var psi = new ProcessStartInfo("rclone", args)
                 {
                     WorkingDirectory = zipDir,
@@ -163,14 +165,14 @@ namespace DolphinUpdater
                 };
                 using (var process = Process.Start(psi))
                 {
-                    process.WaitForExit();
+                    process.OutputDataReceived += (s, e) => { if (e.Data != null) Console.WriteLine(e.Data); };
+                    process.ErrorDataReceived += (s, e) => { if (e.Data != null) Console.WriteLine(e.Data); };
+                    process.BeginOutputReadLine();
+                    process.BeginErrorReadLine();
+                    await Task.Run(() => process.WaitForExit());
                     if (File.Exists(zipPath)) return;
                     Console.WriteLine("rclone failed.");
                 }
-            }
-            else
-            {
-                AskInstallWithScoop("rclone");
             }
 
             // fallback HTTP
@@ -178,26 +180,7 @@ namespace DolphinUpdater
             using (var client = new WebClient())
             {
                 client.DownloadProgressChanged += new DownloadProgressChangedEventHandler(client_DownloadProgressChanged);
-                await client.DownloadFileTaskAsync(new Uri(downloadlink), zipPath);
-            }
-        }
-
-
-
-        public static void ExtractZip(string FileZipPath, string OutputFolder)
-        {
-            using (ZipFile zip = ZipFile.Read(FileZipPath))
-            {
-                foreach (ZipEntry e in zip)
-                {
-                    string[] skipFiles = { "dolphin.log", "dolphin.ini", "gfx.ini", "vcruntime140_1.dll", "gckeynew.ini", "gcpadnew.ini", "hotkeys.ini", "logger.ini", "debugger.ini", "wiimotenew.ini" };
-
-                    if (!skipFiles.Any(e.FileName.ToLower().Contains))
-                    {
-                        Console.WriteLine("Extracting " + e.FileName);
-                        e.Extract(OutputFolder, ExtractExistingFileAction.OverwriteSilently);
-                    }
-                }
+                await client.DownloadFileTaskAsync(new Uri(downloadLink), zipPath);
             }
         }
 
@@ -213,6 +196,23 @@ namespace DolphinUpdater
                                   + ((e.TotalBytesToReceive / 1024f) / 1024f).ToString("#0.##") + "mb"
                                   + "  (" + e.ProgressPercentage + "%)"
                     );
+            }
+        }
+
+        private static void ExtractZip(string FileZipPath, string OutputFolder)
+        {
+            using (ZipFile zip = ZipFile.Read(FileZipPath))
+            {
+                foreach (ZipEntry e in zip)
+                {
+                    string[] skipFiles = { "dolphin.log", "dolphin.ini", "gfx.ini", "vcruntime140_1.dll", "gckeynew.ini", "gcpadnew.ini", "hotkeys.ini", "logger.ini", "debugger.ini", "wiimotenew.ini" };
+
+                    if (!skipFiles.Any(e.FileName.ToLower().Contains))
+                    {
+                        Console.WriteLine("Extracting " + e.FileName);
+                        e.Extract(OutputFolder, ExtractExistingFileAction.OverwriteSilently);
+                    }
+                }
             }
         }
 
@@ -232,63 +232,12 @@ namespace DolphinUpdater
                                 updatedPath = fi.FullName.ToLower().Replace("dolphin.exe", "");
                             }
                         }
-                        catch (UnauthorizedAccessException unAuthFile)
-                        {
-                            Console.WriteLine($"unAuthFile: {unAuthFile.Message}");
-                        }
+                        catch { }
                     }
                 }
-                catch (UnauthorizedAccessException unAuthSubDir)
-                {
-                    Console.WriteLine($"unAuthSubDir: {unAuthSubDir.Message}");
-                }
+                catch { }
             }
         }
-        private static bool IsToolAvailable(string tool)
-        {
-            try
-            {
-                var psi = new ProcessStartInfo("where", tool)
-                {
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    CreateNoWindow = true
-                };
-
-                using (var process = Process.Start(psi))
-                {
-                    string output = process.StandardOutput.ReadToEnd();
-                    process.WaitForExit();
-                    return !string.IsNullOrWhiteSpace(output);
-                }
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        private static void AskInstallWithScoop(string tool)
-        {
-            Console.WriteLine($"{tool} is not installed. Install it using Scoop? (Faster Download (y/n)");
-            if (Console.ReadKey(true).Key == ConsoleKey.Y)
-            {
-                Console.WriteLine($"Installing {tool} via Scoop...");
-                var ps = new ProcessStartInfo("powershell", $"-NoProfile -ExecutionPolicy Bypass -Command \"if (-not (Get-Command scoop -ErrorAction SilentlyContinue)) {{ iwr get.scoop.sh -UseBasicParsing | iex }}; scoop install {tool}\"")
-                {
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    CreateNoWindow = true
-                };
-
-                using (var proc = Process.Start(ps))
-                {
-                    proc.WaitForExit();
-                }
-            }
-        }
-
 
         private static void MoveUpdateFiles(string updateFilesPath, string destinationPath)
         {
@@ -313,6 +262,27 @@ namespace DolphinUpdater
                 if (!file.Contains("temp.zip"))
                     File.Copy(file, dest);
             }
+        }
+
+        private static bool IsToolAvailable(string tool)
+        {
+            try
+            {
+                var psi = new ProcessStartInfo("where", tool)
+                {
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    CreateNoWindow = true
+                };
+
+                using (var process = Process.Start(psi))
+                {
+                    string output = process.StandardOutput.ReadToEnd();
+                    process.WaitForExit();
+                    return !string.IsNullOrWhiteSpace(output);
+                }
+            }
+            catch { return false; }
         }
     }
 }
