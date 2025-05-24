@@ -66,7 +66,7 @@ namespace DolphinUpdater
         {
             if (!IsToolAvailable(tool))
             {
-                Console.WriteLine($"{tool} is not installed. Install it using Scoop? (y/n)");
+                Console.WriteLine($"{tool} is not installed. Install it using Scoop? (Faster Download) (y/n)");
                 if (Console.ReadKey(true).Key == ConsoleKey.Y)
                 {
                     Console.WriteLine($"Installing {tool} via Scoop...");
