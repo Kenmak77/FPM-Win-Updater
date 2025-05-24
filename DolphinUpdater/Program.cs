@@ -29,19 +29,17 @@ namespace DolphinUpdater
 
             CloseDolphin();
 
-            EnsureToolInstalled("aria2"); 
+            EnsureToolInstalled("aria2c");
             EnsureToolInstalled("rclone");
 
             if (File.Exists(zipPath))
                 File.Delete(zipPath);
 
             await Task.Run(() => DownloadZip(downloadLink));
-            ExtractZip(zipPath, tempPath);
 
-            // Optional: Verify SHA1 hash of zip file (replace with actual expected hash)
-            string expectedHash = "YOUR_EXPECTED_SHA1_HASH_HERE";
+            string expectedHash = GetExpectedZipHash();
             string actualHash = GetFileSHA1(zipPath);
-            if (actualHash != expectedHash)
+            if (!string.IsNullOrEmpty(expectedHash) && actualHash != expectedHash)
             {
                 Console.WriteLine("⚠️ SHA1 hash mismatch! The downloaded file may be corrupted or tampered with.");
                 Console.WriteLine("Expected: " + expectedHash);
@@ -50,6 +48,7 @@ namespace DolphinUpdater
                 return;
             }
 
+            ExtractZip(zipPath, tempPath);
             GetDolphinPath();
 
             if (updatedPath == null)
@@ -72,6 +71,25 @@ namespace DolphinUpdater
                     Console.WriteLine("Dolphin.exe not found! Press the enter key to close this application.");
                 } while (Console.ReadKey(true).Key != ConsoleKey.Enter);
             }
+        }
+
+        private static string GetExpectedZipHash()
+        {
+            try
+            {
+                using (var client = new WebClient())
+                {
+                    string json = client.DownloadString("https://update.pplusfr.org/update.json");
+                    var match = System.Text.RegularExpressions.Regex.Match(json, "\"zip-hash\"\\s*:\\s*\"([a-fA-F0-9]+)\"");
+                    if (match.Success)
+                        return match.Groups[1].Value.ToLowerInvariant();
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Failed to fetch expected hash: " + ex.Message);
+            }
+            return null;
         }
 
         private static string GetFileSHA1(string filePath)
@@ -142,7 +160,7 @@ namespace DolphinUpdater
             if (File.Exists(aria2Path) || IsToolAvailable("aria2c"))
             {
                 Console.WriteLine("Download with aria2c...");
-                string arguments = $"copyurl \"{downloadLink}\" \"{zipFileName}\" --multi-thread-streams=8 -P";
+                string arguments = $"-x 16 -s 16 --summary-interval=1 -o \"{zipFileName}\" \"{downloadLink}\"";
                 if (await RunExternalDownloader(aria2Path, arguments, zipDir)) return;
                 Console.WriteLine("aria2c error. Try with rclone...");
             }
@@ -286,7 +304,7 @@ namespace DolphinUpdater
         {
             if (!IsToolAvailable(toolName))
             {
-                Console.WriteLine($"{toolName} is not installed. Do you want to install it using Scoop (Faster Download)? (y/n)");
+                Console.WriteLine($"{toolName} is not installed. Do you want to install it using Scoop? (y/n)");
                 if (Console.ReadKey(true).Key == ConsoleKey.Y)
                 {
                     Console.WriteLine($"\nInstalling {toolName} via Scoop...");
@@ -297,6 +315,16 @@ namespace DolphinUpdater
                         }}
                         scoop install {toolName}
                     ";
+                    RunPowerShell(psScript);
+                }
+            }
+            else
+            {
+                Console.WriteLine($"{toolName} is already installed. Do you want to update it with Scoop? (Faster Download) (y/n)");
+                if (Console.ReadKey(true).Key == ConsoleKey.Y)
+                {
+                    Console.WriteLine($"\nUpdating {toolName} via Scoop...");
+                    var psScript = $"scoop update {toolName}";
                     RunPowerShell(psScript);
                 }
             }
