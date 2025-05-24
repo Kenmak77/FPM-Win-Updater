@@ -96,7 +96,7 @@ namespace DolphinUpdater
 
             using (var proc = Process.Start(ps))
             {
-                await proc.WaitForExitAsync();
+                await Task.Run(() => proc.WaitForExit()); ;
             }
         }
 
