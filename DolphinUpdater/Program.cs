@@ -78,13 +78,66 @@ namespace DolphinUpdater
             if (File.Exists(zipPath))
                 File.Delete(zipPath);
 
-            Console.WriteLine("Starting download....");
+            string zipFileName = Path.GetFileName(zipPath);
+            string zipDir = Path.GetDirectoryName(zipPath);
+
+            // aria2
+            if (!IsToolAvailable("aria2c"))
+                AskInstallWithScoop("aria2");
+
+            if (IsToolAvailable("aria2c"))
+            {
+                Console.WriteLine("Downloading with aria2c...");
+                string args = $"-x 16 -s 16 -o \"{zipFileName}\" \"{downloadlink}\"";
+                var psi = new ProcessStartInfo("aria2c", args)
+                {
+                    WorkingDirectory = zipDir,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                };
+                using (var process = Process.Start(psi))
+                {
+                    process.WaitForExit();
+                    if (File.Exists(zipPath)) return;
+                    Console.WriteLine("aria2c failed.");
+                }
+            }
+
+            // rclone
+            if (!IsToolAvailable("rclone"))
+                AskInstallWithScoop("rclone");
+
+            if (IsToolAvailable("rclone"))
+            {
+                Console.WriteLine("Downloading with rclone...");
+                string args = $"copyurl \"{downloadlink}\" \"{zipFileName}\" --multi-thread-streams=8 -P";
+                var psi = new ProcessStartInfo("rclone", args)
+                {
+                    WorkingDirectory = zipDir,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                };
+                using (var process = Process.Start(psi))
+                {
+                    process.WaitForExit();
+                    if (File.Exists(zipPath)) return;
+                    Console.WriteLine("rclone failed.");
+                }
+            }
+
+            // fallback WebClient
+            Console.WriteLine("Downloading with WebClient...");
             using (var client = new WebClient())
             {
                 client.DownloadProgressChanged += new DownloadProgressChangedEventHandler(client_DownloadProgressChanged);
                 await client.DownloadFileTaskAsync(new Uri(downloadlink), zipPath);
             }
         }
+
 
         public static void ExtractZip(string FileZipPath, string OutputFolder)
         {
@@ -143,6 +196,50 @@ namespace DolphinUpdater
                 catch (UnauthorizedAccessException unAuthSubDir)
                 {
                     Console.WriteLine($"unAuthSubDir: {unAuthSubDir.Message}");
+                }
+            }
+        }
+        private static bool IsToolAvailable(string tool)
+        {
+            try
+            {
+                var psi = new ProcessStartInfo("where", tool)
+                {
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    CreateNoWindow = true
+                };
+
+                using (var process = Process.Start(psi))
+                {
+                    string output = process.StandardOutput.ReadToEnd();
+                    process.WaitForExit();
+                    return !string.IsNullOrWhiteSpace(output);
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void AskInstallWithScoop(string tool)
+        {
+            Console.WriteLine($"{tool} is not installed. Install it using Scoop? (Faster Download) (y/n)");
+            if (Console.ReadKey(true).Key == ConsoleKey.Y)
+            {
+                Console.WriteLine($"Installing {tool} via Scoop...");
+                var ps = new ProcessStartInfo("powershell", $"-NoProfile -ExecutionPolicy Bypass -Command \"if (-not (Get-Command scoop -ErrorAction SilentlyContinue)) {{ iwr get.scoop.sh -UseBasicParsing | iex }}; scoop install {tool}\"")
+                {
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                };
+
+                using (var proc = Process.Start(ps))
+                {
+                    proc.WaitForExit();
                 }
             }
         }
