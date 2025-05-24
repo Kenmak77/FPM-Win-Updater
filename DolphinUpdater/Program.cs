@@ -29,7 +29,7 @@ namespace DolphinUpdater
 
             CloseDolphin();
 
-            EnsureToolInstalled("aria2c");
+            EnsureToolInstalled("aria2");
             EnsureToolInstalled("rclone");
 
             if (File.Exists(zipPath))
@@ -157,7 +157,7 @@ namespace DolphinUpdater
             string zipDir = Path.GetDirectoryName(zipPath);
 
             string aria2Path = "aria2c";
-            if (File.Exists(aria2Path) || IsToolAvailable("aria2c"))
+            if (File.Exists(aria2Path) || IsToolAvailable("aria2"))
             {
                 Console.WriteLine("Download with aria2c...");
                 string arguments = $"-x 16 -s 16 --summary-interval=1 -o \"{zipFileName}\" \"{downloadLink}\"";
