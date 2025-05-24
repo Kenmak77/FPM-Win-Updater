@@ -5,7 +5,7 @@ using System.Net;
 using System.IO;
 using System.Threading.Tasks;
 using System.Linq;
-using Ionic.Zip;
+using ICSharpCode.SharpZipLib.Zip;
 
 namespace DolphinUpdater
 {
@@ -199,18 +199,27 @@ namespace DolphinUpdater
             }
         }
 
-        private static void ExtractZip(string FileZipPath, string OutputFolder)
+        public static void ExtractZip(string fileZipPath, string outputFolder)
         {
-            using (ZipFile zip = ZipFile.Read(FileZipPath))
+            using (var zipInputStream = new ZipInputStream(File.OpenRead(fileZipPath)))
             {
-                foreach (ZipEntry e in zip)
+                ZipEntry entry;
+                while ((entry = zipInputStream.GetNextEntry()) != null)
                 {
-                    string[] skipFiles = { "dolphin.log", "dolphin.ini", "gfx.ini", "vcruntime140_1.dll", "gckeynew.ini", "gcpadnew.ini", "hotkeys.ini", "logger.ini", "debugger.ini", "wiimotenew.ini" };
+                    string entryFileName = entry.Name;
+                    string fullZipToPath = Path.Combine(outputFolder, entryFileName);
+                    string directoryName = Path.GetDirectoryName(fullZipToPath);
+                    if (!string.IsNullOrEmpty(directoryName))
+                        Directory.CreateDirectory(directoryName);
 
-                    if (!skipFiles.Any(e.FileName.ToLower().Contains))
+                    using (FileStream streamWriter = File.Create(fullZipToPath))
                     {
-                        Console.WriteLine("Extracting " + e.FileName);
-                        e.Extract(OutputFolder, ExtractExistingFileAction.OverwriteSilently);
+                        byte[] data = new byte[4096];
+                        int size;
+                        while ((size = zipInputStream.Read(data, 0, data.Length)) > 0)
+                        {
+                            streamWriter.Write(data, 0, size);
+                        }
                     }
                 }
             }
@@ -264,11 +273,11 @@ namespace DolphinUpdater
             }
         }
 
-        private static bool IsToolAvailable(string tool)
+        private static bool IsToolAvailable(string toolExecutable)
         {
             try
             {
-                var psi = new ProcessStartInfo("where", tool)
+                var psi = new ProcessStartInfo("where", toolExecutable)
                 {
                     UseShellExecute = false,
                     RedirectStandardOutput = true,
@@ -279,9 +288,20 @@ namespace DolphinUpdater
                 {
                     string output = process.StandardOutput.ReadToEnd();
                     process.WaitForExit();
-                    return !string.IsNullOrWhiteSpace(output);
+
+                    Console.WriteLine($"[DEBUG] Checking '{toolExecutable}' availability:\n{output}");
+
+                    return output
+                        .Split(new[] { Environment.NewLine }, StringSplitOptions.RemoveEmptyEntries)
+                        .Any(path => File.Exists(path.Trim()));
                 }
             }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ERROR] Tool check failed for '{toolExecutable}': {ex.Message}");
+                return false;
+            }
+        }
             catch { return false; }
         }
     }
