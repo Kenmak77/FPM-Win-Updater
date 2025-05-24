@@ -125,7 +125,7 @@ namespace DolphinUpdater
 
         private static bool AskToolPermission(string toolName)
         {
-            Console.WriteLine($"Allow use of {toolName}? (Faster Download) (y/n)");
+            Console.WriteLine($"Allow use of {toolName}? (Fasterdownload) (y/n)");
             return Console.ReadKey(true).Key == ConsoleKey.Y;
         }
 
@@ -281,7 +281,10 @@ namespace DolphinUpdater
 
                     Console.WriteLine("Extracting " + entry.Name);
                     string fullPath = Path.Combine(OutputFolder, entry.Name);
-                    Directory.CreateDirectory(Path.GetDirectoryName(fullPath));
+                    string directoryName = Path.GetDirectoryName(fullPath);
+                    if (!string.IsNullOrEmpty(directoryName))
+                        Directory.CreateDirectory(directoryName);
+
                     using (var streamWriter = File.Create(fullPath))
                     {
                         zipInput.CopyTo(streamWriter);
