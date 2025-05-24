@@ -1,4 +1,5 @@
-﻿using System;
+﻿// DolphinUpdater with aria2c, rclone, fallback + scoop integration and update check
+using System;
 using System.Diagnostics;
 using System.Net;
 using System.IO;
@@ -28,10 +29,13 @@ namespace DolphinUpdater
 
             CloseDolphin();
 
+            await EnsureToolInstalledAndUpdated("aria2");
+            await EnsureToolInstalledAndUpdated("rclone");
+
             if (File.Exists(zipPath))
                 File.Delete(zipPath);
 
-            await Task.Run(() => DownloadZip(downloadLink));
+            await DownloadZip(downloadLink);
             ExtractZip(zipPath, tempPath);
 
             GetDolphinPath();
@@ -55,6 +59,44 @@ namespace DolphinUpdater
                 {
                     Console.WriteLine("Dolphin.exe not found! Press the enter key to close this application.");
                 } while (Console.ReadKey(true).Key != ConsoleKey.Enter);
+            }
+        }
+
+        private static async Task EnsureToolInstalledAndUpdated(string tool)
+        {
+            if (!IsToolAvailable(tool))
+            {
+                Console.WriteLine($"{tool} is not installed. Install it using Scoop? (y/n)");
+                if (Console.ReadKey(true).Key == ConsoleKey.Y)
+                {
+                    Console.WriteLine($"Installing {tool} via Scoop...");
+                    await RunPowerShell($"if (-not (Get-Command scoop -ErrorAction SilentlyContinue)) {{ iwr get.scoop.sh -UseBasicParsing | iex }}; scoop install {tool}");
+                }
+            }
+            else
+            {
+                Console.WriteLine($"{tool} is already installed. Update it with Scoop? (y/n)");
+                if (Console.ReadKey(true).Key == ConsoleKey.Y)
+                {
+                    Console.WriteLine($"Updating {tool} via Scoop...");
+                    await RunPowerShell($"scoop update {tool}");
+                }
+            }
+        }
+
+        private static async Task RunPowerShell(string command)
+        {
+            var ps = new ProcessStartInfo("powershell", $"-NoProfile -ExecutionPolicy Bypass -Command \"{command}\"")
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+
+            using (var proc = Process.Start(ps))
+            {
+                await proc.WaitForExitAsync();
             }
         }
 
@@ -228,7 +270,7 @@ namespace DolphinUpdater
 
         private static void AskInstallWithScoop(string tool)
         {
-            Console.WriteLine($"{tool} is not installed. Install it using Scoop? (y/n)");
+            Console.WriteLine($"{tool} is not installed. Install it using Scoop? (Faster Download (y/n)");
             if (Console.ReadKey(true).Key == ConsoleKey.Y)
             {
                 Console.WriteLine($"Installing {tool} via Scoop...");
