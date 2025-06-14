@@ -1,6 +1,8 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project Sdk="Microsoft.NET.Sdk">
 
+
+
 <PropertyGroup>
   <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
   <Company>Votre Société</Company>
@@ -10,9 +12,22 @@
   <Title>Dolphin Updater</Title>
 </PropertyGroup>
 
+<PropertyGroup>
+  <UseWPF>false</UseWPF>
+  <UseWindowsForms>false</UseWindowsForms>
+</PropertyGroup>
+
+<PropertyGroup>
+    <Nullable>enable</Nullable>
+    <WarningsAsErrors>nullable</WarningsAsErrors>
+</PropertyGroup>
 
   <PropertyGroup>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <IncludeAllContentForSelfExtract>true</IncludeAllContentForSelfExtract>
     <OutputType>Exe</OutputType>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
     <TargetFramework>net8.0</TargetFramework>
     <AssemblyName>Updater</AssemblyName>
     <RootNamespace>DolphinUpdater</RootNamespace>
@@ -20,6 +35,8 @@
     <TrimMode>link</TrimMode>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
   </PropertyGroup>
 
   <ItemGroup>
@@ -27,4 +44,8 @@
     <PackageReference Include="System.Buffers" Version="4.6.0" />
   </ItemGroup>
 
- </Project>
+ <Target Name="CheckBundle" AfterTargets="Publish">
+  <Exec Command="dir $(PublishDir)" />
+  <Error Text="Fichier unique non généré!" Condition="!Exists('$(PublishDir)$(AssemblyName).exe')" />
+</Target>
+</Project>

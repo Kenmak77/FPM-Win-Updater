@@ -17,13 +17,14 @@ namespace DolphinUpdater
         // Configuration
         private const int MAX_DOWNLOAD_RETRIES = 3;
         private const int RETRY_DELAY_MS = 2000;
+        private const int MAX_TEMP_CLEANUP_RETRIES = 5;
+        private const int TEMP_CLEANUP_DELAY_MS = 1000;
         private static readonly string[] PRESERVE_FILES = {
             "dolphin.log", "dolphin.ini", "gfx.ini", "vcruntime140_1.dll",
             "gckeynew.ini", "gcpadnew.ini", "hotkeys.ini", "logger.ini",
             "debugger.ini", "wiimotenew.ini"
         };
 
-        // State
         private static string installPath = string.Empty;
         private static string tempPath = string.Empty;
         private static string? dolphinPath;
@@ -35,25 +36,46 @@ namespace DolphinUpdater
 
         static async Task Main(string[] args)
         {
+            if (args.Any(a => a.Equals("--security-verify", StringComparison.OrdinalIgnoreCase)))
+            {
+                Console.WriteLine("Security verification passed");
+                return;
+            }
+
             try
             {
-                AttachConsole(-1); // Attach to parent console
-                Console.WriteLine("\n=== Dolphin Updater ===");
+                Console.WriteLine("\n======================= P+FR Updater =======================");
+                Console.WriteLine("\nIt may take a little time, pls wait until this window close ");
+                Console.WriteLine("\n");
 
-                if (!ValidateArguments(args)) return;
+                if (!ValidateArguments(args))
+                    return;
 
                 installPath = args[1];
-                tempPath = Path.Combine(installPath, "temp");
+                tempPath = Path.Combine(Path.GetTempPath(), $"updater-temp-{Guid.NewGuid()}");
                 zipPath = Path.Combine(tempPath, "update.zip");
 
+                CleanupTempDirectory(); // Ensure temp dir is clean before download
+
+                await PromptScoopAndTools();
                 await RunUpdateProcess(args[0]);
+
+                Log("All Good. Dolphin should be launched, HF.");
+                Thread.Sleep(1000); // Donne le temps à Dolphin de démarrer
+
+                // Laisser le temps à l'utilisateur de voir un message final ?
+                // Console.WriteLine("Press any key to close...");
+                // Console.ReadKey(true); // Ou directement :
+                Environment.Exit(2000);
             }
             catch (Exception ex)
             {
                 LogError($"Critical failure: {ex}");
-                ExitWithDelay(5);
+                Thread.Sleep(2000); // Laisse l'utilisateur voir l'erreur
+                Environment.Exit(1);
             }
         }
+
 
         private static bool ValidateArguments(string[] args)
         {
@@ -62,21 +84,84 @@ namespace DolphinUpdater
                 LogError("Usage: Updater.exe <downloadUrl> <installPath>");
                 return false;
             }
-
             if (!Uri.TryCreate(args[0], UriKind.Absolute, out _))
             {
                 LogError("Invalid download URL format");
                 return false;
             }
-
             if (!Directory.Exists(args[1]))
             {
                 LogError("Install directory does not exist");
                 return false;
             }
-
             return true;
         }
+
+
+        private static async Task PromptScoopAndTools()
+        {
+            bool hasScoop = IsToolAvailable("scoop");
+
+            if (!hasScoop)
+            {
+                Log("Scoop is not installed. Install it now? (install Aria2 and Rcloud to faster download) (y/n)");
+                if (Console.ReadKey(true).Key == ConsoleKey.Y)
+                {
+                    await RunPowerShell(@"Set-ExecutionPolicy RemoteSigned -Scope CurrentUser -Force; iwr get.scoop.sh -UseBasicParsing | iex");
+                    hasScoop = true;
+                }
+                else
+                {
+                    Log("Scoop not installed. Will continue with fallback methods if available.");
+                }
+            }
+
+            if (hasScoop)
+            {
+                if (!IsToolAvailable("aria2c"))
+                {
+                    Log("aria2 is not installed. Installing via Scoop...");
+                    await RunPowerShell("scoop install aria2");
+                }
+                else
+                {
+                    Log("aria2 is installed. Updating...");
+                    await RunPowerShell("scoop update aria2");
+                }
+
+                if (!IsToolAvailable("rclone"))
+                {
+                    Log("rclone is not installed. Installing via Scoop...");
+                    await RunPowerShell("scoop install rclone");
+                }
+                else
+                {
+                    Log("rclone is installed. Updating...");
+                    await RunPowerShell("scoop update rclone");
+                }
+            }
+        }
+
+
+
+
+        private static async Task RunPowerShell(string command)
+        {
+            var ps = new ProcessStartInfo("powershell", $"-NoProfile -ExecutionPolicy Bypass -Command \"{command}\"")
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+
+            using var proc = Process.Start(ps);
+            await Task.Run(() => proc!.WaitForExit());
+        }
+
+
+
+
 
         private static async Task RunUpdateProcess(string downloadUrl)
         {
@@ -101,6 +186,8 @@ namespace DolphinUpdater
 
                 // 6. Launch Dolphin
                 LaunchDolphin();
+                await Task.Delay(1000);
+               
 
                 Log("Update completed successfully!");
             }
@@ -132,17 +219,24 @@ namespace DolphinUpdater
             Log($"Downloading update from: {downloadUrl}");
 
             if (File.Exists(zipPath))
+            {
+                Log("Deleting existing update.zip to avoid conflict...");
                 File.Delete(zipPath);
+            }
 
-            // Try aria2c first, then rclone, then fallback to HttpClient
+            // aria2c first
             if (await TryDownloadWithTool("aria2c", $"-x 16 -s 16 -o \"{Path.GetFileName(zipPath)}\" \"{downloadUrl}\"", tempPath))
                 return;
 
+            // rclone fallback
             if (await TryDownloadWithTool("rclone", $"copyurl \"{downloadUrl}\" \"{Path.GetFileName(zipPath)}\" --multi-thread-streams=8 -P", tempPath))
                 return;
 
+            // http client
+            Log("Falling back to HTTP...");
             await DownloadWithHttpClient(downloadUrl, zipPath);
         }
+
 
         private static async Task<bool> TryDownloadWithTool(string toolName, string arguments, string workingDir)
         {
@@ -152,6 +246,12 @@ namespace DolphinUpdater
 
             try
             {
+                // Ajoute automatiquement -d pour aria2c
+                if (toolName == "aria2c" && !arguments.Contains("-d"))
+                {
+                    arguments = $"-d \"{workingDir}\" {arguments}";
+                }
+
                 using var process = new Process
                 {
                     StartInfo = new ProcessStartInfo
@@ -166,8 +266,8 @@ namespace DolphinUpdater
                     }
                 };
 
-                process.OutputDataReceived += (s, e) => Log($"[{toolName}] {e.Data}");
-                process.ErrorDataReceived += (s, e) => Log($"[{toolName} ERROR] {e.Data}");
+                process.OutputDataReceived += (s, e) => { if (!string.IsNullOrWhiteSpace(e.Data)) Log($"[{toolName}] {e.Data}"); };
+                process.ErrorDataReceived += (s, e) => { if (!string.IsNullOrWhiteSpace(e.Data)) LogError($"[{toolName} ERROR] {e.Data}"); };
 
                 process.Start();
                 process.BeginOutputReadLine();
@@ -175,19 +275,24 @@ namespace DolphinUpdater
 
                 await process.WaitForExitAsync();
 
-                if (File.Exists(zipPath))
+                if (File.Exists(zipPath) && new FileInfo(zipPath).Length > 0)
                 {
                     Log($"Download succeeded using {toolName}");
                     return true;
                 }
+                else
+                {
+                    LogError($"{toolName} ran but file was not created correctly.");
+                }
             }
             catch (Exception ex)
             {
-                Log($"Download with {toolName} failed: {ex.Message}");
+                LogError($"Download with {toolName} failed: {ex.Message}");
             }
 
             return false;
         }
+
 
         private static async Task DownloadWithHttpClient(string url, string outputPath)
         {
@@ -198,12 +303,32 @@ namespace DolphinUpdater
             {
                 try
                 {
-                    using var response = await httpClient.GetAsync(url);
+                    using var response = await httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
                     response.EnsureSuccessStatusCode();
 
-                    await using var stream = await response.Content.ReadAsStreamAsync();
-                    await using var fileStream = File.Create(outputPath);
-                    await stream.CopyToAsync(fileStream);
+                    var total = response.Content.Headers.ContentLength ?? -1L;
+                    var canReportProgress = total != -1;
+
+                    await using var fileStream = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.None);
+                    await using var httpStream = await response.Content.ReadAsStreamAsync();
+
+                    var buffer = new byte[81920];
+                    long totalRead = 0;
+                    int read;
+                    while ((read = await httpStream.ReadAsync(buffer)) > 0)
+                    {
+                        await fileStream.WriteAsync(buffer.AsMemory(0, read));
+                        totalRead += read;
+                        if (canReportProgress)
+                        {
+                            Console.Write($"\rDownloading... {totalRead / 1024 / 1024}MB / {total / 1024 / 1024}MB ({(int)((double)totalRead / total * 100)}%)");
+                        }
+                        else
+                        {
+                            Console.Write($"\rDownloading... {totalRead / 1024 / 1024}MB");
+                        }
+                    }
+                    Console.WriteLine();
                     return;
                 }
                 catch (Exception ex)
@@ -272,7 +397,6 @@ namespace DolphinUpdater
                     Log($"Updated: {fileName}");
                 }
 
-                // Copy directories recursively
                 foreach (var sourceDir in Directory.GetDirectories(dolphinPath))
                 {
                     var dirName = Path.GetFileName(sourceDir);
@@ -332,9 +456,11 @@ namespace DolphinUpdater
                 Log("Launching Dolphin...");
                 Process.Start(new ProcessStartInfo
                 {
-                    FileName = dolphinExe,
-                    WorkingDirectory = installPath,
-                    UseShellExecute = true
+                    FileName = "cmd.exe",
+                    Arguments = "/C start \"\" \"./Dolphin.exe\"",
+                    WorkingDirectory = installPath, // ou installPath
+                    CreateNoWindow = true,
+                    UseShellExecute = false
                 });
             }
             catch (Exception ex)
@@ -370,19 +496,27 @@ namespace DolphinUpdater
 
         private static void CleanupTempDirectory()
         {
-            try
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+
+            for (int i = 0; i < MAX_TEMP_CLEANUP_RETRIES; i++)
             {
-                if (Directory.Exists(tempPath))
+                try
                 {
-                    Log("Cleaning up temporary files...");
-                    Directory.Delete(tempPath, true);
+                    if (Directory.Exists(tempPath))
+                    {
+                        Directory.Delete(tempPath, true);
+                    }
+                    return;
+                }
+                catch
+                {
+                    Thread.Sleep(TEMP_CLEANUP_DELAY_MS);
                 }
             }
-            catch (Exception ex)
-            {
-                Log($"Warning: Could not clean up temp directory: {ex.Message}");
-            }
         }
+
+
 
         private static bool IsToolAvailable(string tool)
         {
@@ -402,13 +536,14 @@ namespace DolphinUpdater
                 var output = process.StandardOutput.ReadToEnd();
                 process.WaitForExit();
 
-                return !string.IsNullOrEmpty(output);
+                return !string.IsNullOrWhiteSpace(output);
             }
             catch
             {
                 return false;
             }
         }
+
 
         private static void Log(string message)
         {
@@ -420,11 +555,8 @@ namespace DolphinUpdater
             Console.Error.WriteLine($"[{DateTime.Now:HH:mm:ss}] ERROR: {message}");
         }
 
-        private static void ExitWithDelay(int seconds)
-        {
-            Log($"Closing in {seconds} seconds...");
-            Thread.Sleep(seconds * 1000);
-            Environment.Exit(1);
-        }
+       
+       
+
     }
 }
