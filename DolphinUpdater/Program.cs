@@ -126,7 +126,7 @@ namespace DolphinUpdater
                 else
                 {
                     Log("aria2 is installed. Updating...");
-                    await RunPowerShell("scoop update aria2");
+                    await RunPowerShell("scoop update aria2, 6000");
                 }
 
                 if (!IsToolAvailable("rclone"))
@@ -137,7 +137,7 @@ namespace DolphinUpdater
                 else
                 {
                     Log("rclone is installed. Updating...");
-                    await RunPowerShell("scoop update rclone");
+                    await RunPowerShell("scoop update rclone, 6000");
                 }
             }
         }
@@ -145,18 +145,48 @@ namespace DolphinUpdater
 
 
 
-        private static async Task RunPowerShell(string command)
+        private static async Task RunPowerShell(string command, int timeoutMs = 10000)
         {
-            var ps = new ProcessStartInfo("powershell", $"-NoProfile -ExecutionPolicy Bypass -Command \"{command}\"")
+            try
             {
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true
-            };
+                var ps = new ProcessStartInfo("powershell", $"-NoProfile -ExecutionPolicy Bypass -Command \"{command}\"")
+                {
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                };
 
-            using var proc = Process.Start(ps);
-            await Task.Run(() => proc!.WaitForExit());
+                using var proc = Process.Start(ps);
+                if (proc == null)
+                {
+                    Log("Failed to start PowerShell process.");
+                    return;
+                }
+
+                // Attente avec timeout
+                var exited = await Task.Run(() => proc.WaitForExit(timeoutMs));
+                if (exited)
+                {
+                    string output = await proc.StandardOutput.ReadToEndAsync();
+                    string error = await proc.StandardError.ReadToEndAsync();
+
+                    if (!string.IsNullOrWhiteSpace(output))
+                        Log(output.Trim());
+
+                    if (!string.IsNullOrWhiteSpace(error))
+                        Log("PowerShell Error: " + error.Trim());
+                }
+                else
+                {
+                    try { proc.Kill(); } catch { }
+                    Log($"[Timeout] PowerShell command took too long and was terminated: {command}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"Exception while running PowerShell: {ex.Message}");
+            }
         }
 
 
