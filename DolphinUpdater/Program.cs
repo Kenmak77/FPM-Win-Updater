@@ -126,7 +126,7 @@ namespace DolphinUpdater
                 else
                 {
                     Log("aria2 is installed. Updating...");
-                    await RunPowerShell("scoop update aria2, 6000");
+                    await RunPowerShell("scoop update aria2", 6000);
                 }
 
                 if (!IsToolAvailable("rclone"))
@@ -137,7 +137,7 @@ namespace DolphinUpdater
                 else
                 {
                     Log("rclone is installed. Updating...");
-                    await RunPowerShell("scoop update rclone, 6000");
+                    await RunPowerShell("scoop update rclone", 6000);
                 }
             }
         }
