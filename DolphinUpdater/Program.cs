@@ -76,7 +76,18 @@ namespace DolphinUpdater
             }
         }
 
+        private static void CheckDiskSpace(string targetPath, long requiredBytes)
+        {
+            var drive = new DriveInfo(Path.GetPathRoot(targetPath)!);
+            long freeBytes = drive.AvailableFreeSpace;
 
+            if (freeBytes < requiredBytes)
+            {
+                throw new Exception(
+                    $"Not enough disk space for installation. {requiredBytes / (1024 * 1024 * 1024)} GB required, " +
+                    $"{freeBytes / (1024 * 1024 * 1024)} GB available.");
+            }
+        }
         private static bool ValidateArguments(string[] args)
         {
             if (args.Length < 2)
@@ -408,6 +419,12 @@ namespace DolphinUpdater
 
             // Find the actual Dolphin folder in the extracted files
             dolphinPath = FindDolphinPath() ?? tempPath;
+
+            // 6 Go requis
+            long requiredSpace = 6L * 1024 * 1024 * 1024;
+            CheckDiskSpace(dolphinPath, requiredSpace);
+
+            Log("Sufficient disk space available. Continuing update...");
 
             try
             {
