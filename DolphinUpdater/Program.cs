@@ -1,15 +1,23 @@
-﻿using System;
+﻿#nullable enable
+
+using System;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Runtime.InteropServices;
+using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using SharpCompress.Archives;
 using SharpCompress.Archives.Zip;
 using SharpCompress.Common;
+using System.Security.Cryptography; // en haut du fichier
+using System.Text.Json.Nodes; // si tu utilises JsonObject / JsonNode
+using System.Text.Json;
 
+#nullable enable
 namespace DolphinUpdater
 {
     class Program
@@ -27,15 +35,92 @@ namespace DolphinUpdater
 
         private static string installPath = string.Empty;
         private static string tempPath = string.Empty;
-        private static string? dolphinPath;
+        private static string dolphinPath = string.Empty;
         private static string zipPath = string.Empty;
         private static readonly HttpClient httpClient = new HttpClient();
 
-        [DllImport("kernel32.dll")]
+        [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        private static extern int MessageBox(IntPtr hWnd, String text, String caption, uint type);
+
+
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern bool GetDiskFreeSpaceEx(
+    string lpDirectoryName,
+    out ulong lpFreeBytesAvailable,
+    out ulong lpTotalNumberOfBytes,
+    out ulong lpTotalNumberOfFreeBytes);
+
+        [DllImport("Kernel32")]
+        private static extern bool SetConsoleCtrlHandler(EventHandler handler, bool add);
+
+        private delegate bool EventHandler(CtrlType sig);
+        private static readonly EventHandler _handler = Handler;
+
+
+        enum CtrlType
+        {
+            CTRL_C_EVENT = 0,
+            CTRL_BREAK_EVENT = 1,
+            CTRL_CLOSE_EVENT = 2,
+            CTRL_LOGOFF_EVENT = 5,
+            CTRL_SHUTDOWN_EVENT = 6
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool MoveFileEx(string lpExistingFileName, string lpNewFileName, int dwFlags);
+
+        private const int MOVEFILE_DELAY_UNTIL_REBOOT = 0x4;
+
+        private static void MarkForDeletionOnReboot(string path)
+        {
+            try
+            {
+                // Méthode 1: API Windows
+                MoveFileEx(path, "", MOVEFILE_DELAY_UNTIL_REBOOT);
+
+                // Méthode 2: Registry (fallback)
+                using (var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(
+                    @"SYSTEM\CurrentControlSet\Control\Session Manager", writable: true))
+                {
+                    if (key != null)
+                    {
+                        var pendingFiles = key.GetValue("PendingFileRenameOperations") as string[] ?? Array.Empty<string>();
+                        var newPendingFiles = new List<string>(pendingFiles) { path, "" };
+                        key.SetValue("PendingFileRenameOperations", newPendingFiles.ToArray(),
+                            Microsoft.Win32.RegistryValueKind.MultiString);
+                    }
+                    else
+                    {
+                        Log("Registry key not found (cannot mark file for deletion on reboot).");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"Échec marquage reboot: {ex.Message}");
+            }
+        }
+        private static bool Handler(CtrlType sig)
+        {
+            // Ajoutez une vérification de null si nécessaire
+            if (tempPath == null) return false;
+
+            Log($"Shutdown signal received: {sig}");
+            CleanupTempDirectory();
+            Environment.Exit(1);
+            return true;
+        }
+
         private static extern bool AttachConsole(int dwProcessId);
 
         static async Task Main(string[] args)
         {
+            // Gestion des signaux systèm
+            SetConsoleCtrlHandler(_handler, true);
+
+            KillAllTempProcesses();
+
             if (args.Any(a => a.Equals("--security-verify", StringComparison.OrdinalIgnoreCase)))
             {
                 Console.WriteLine("Security verification passed");
@@ -44,7 +129,7 @@ namespace DolphinUpdater
 
             try
             {
-                Console.WriteLine("\n======================= P+FR Updater =======================");
+                Console.WriteLine("\n===================================================== P+FR Updater =====================================================");
                 Console.WriteLine("\nIt may take a little time, pls wait until this window close ");
                 Console.WriteLine("\n");
 
@@ -52,42 +137,185 @@ namespace DolphinUpdater
                     return;
 
                 installPath = args[1];
-                tempPath = Path.Combine(Path.GetTempPath(), $"updater-temp-{Guid.NewGuid()}");
-                zipPath = Path.Combine(tempPath, "update.zip");
+
 
                 CleanupTempDirectory(); // Ensure temp dir is clean before download
 
                 await PromptScoopAndTools();
                 await RunUpdateProcess(args[0]);
 
-                Log("All Good. Dolphin should be launched, HF.");
-                Thread.Sleep(1000); // Donne le temps à Dolphin de démarrer
-
-                // Laisser le temps à l'utilisateur de voir un message final ?
-                // Console.WriteLine("Press any key to close...");
-                // Console.ReadKey(true); // Ou directement :
-                Environment.Exit(2000);
+              
             }
             catch (Exception ex)
             {
                 LogError($"Critical failure: {ex}");
                 Thread.Sleep(2000); // Laisse l'utilisateur voir l'erreur
+                CleanupTempDirectory();
                 Environment.Exit(1);
             }
         }
 
-        private static void CheckDiskSpace(string targetPath, long requiredBytes)
+        private static async Task<long> GetContentLength(string url)
         {
-            var drive = new DriveInfo(Path.GetPathRoot(targetPath)!);
-            long freeBytes = drive.AvailableFreeSpace;
-
-            if (freeBytes < requiredBytes)
+            try
             {
-                throw new Exception(
-                    $"Not enough disk space for installation. {requiredBytes / (1024 * 1024 * 1024)} GB required, " +
-                    $"{freeBytes / (1024 * 1024 * 1024)} GB available.");
+                using var request = new HttpRequestMessage(HttpMethod.Head, url);
+                using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+                if (response.Content.Headers.ContentLength.HasValue)
+                    return response.Content.Headers.ContentLength.Value;
+            }
+            catch (Exception ex)
+            {
+                Log($"Warning: Could not fetch Content-Length for {url}: {ex.Message}");
+            }
+            return -1;
+        }
+        private static void KillAllTempProcesses()
+        {
+            try
+            {
+                var currentProcess = Process.GetCurrentProcess();
+                var mainModule = currentProcess.MainModule;
+
+                // Ajout de la vérification de null
+                if (mainModule?.FileName == null)
+                {
+                    Log("Could not get main module info");
+                    return;
+                }
+
+                foreach (var process in Process.GetProcessesByName("Dolphin"))
+                {
+                    try
+                    {
+                        if (process.Id != currentProcess.Id)
+                            process.Kill();
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+        }
+
+        private static bool IsHDD(string path)
+        {
+            try
+            {
+                // Gestion explicite du cas null
+                string? rootPath = Path.GetPathRoot(path);
+                if (string.IsNullOrEmpty(rootPath))
+                {
+                    Log("Could not determine drive root path, defaulting to HDD behavior");
+                    return true; // fallback to HDD if can't determine
+                }
+
+                // Suppression des caractères inutiles
+                string driveLetter = rootPath.Replace("\\", "").Replace(":", "");
+                if (string.IsNullOrEmpty(driveLetter))
+                {
+                    Log("Could not extract drive letter, defaulting to HDD behavior");
+                    return true;
+                }
+
+                var ps = new ProcessStartInfo("powershell",
+                    $"-NoProfile -Command \"(Get-PhysicalDisk | Where-Object {{$_.DeviceID -eq (Get-Partition -DriveLetter {driveLetter} | Get-Disk).Number}}).MediaType\"")
+                {
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    CreateNoWindow = true
+                };
+
+                using var proc = Process.Start(ps);
+                if (proc == null)
+                {
+                    Log("Failed to start PowerShell process, defaulting to HDD behavior");
+                    return true; // fallback HDD
+                }
+
+                string output = proc.StandardOutput.ReadToEnd().Trim();
+                proc.WaitForExit();
+
+                return output.Equals("HDD", StringComparison.OrdinalIgnoreCase);
+            }
+            catch (Exception ex)
+            {
+                Log($"Error checking disk type: {ex.Message}, defaulting to HDD behavior");
+                return true; // fallback → si erreur, on suppose HDD
             }
         }
+        private static void CheckDiskSpace(string targetPath, long requiredBytes)
+        {
+            string root = Path.GetPathRoot(targetPath)!;
+
+            if (!GetDiskFreeSpaceEx(root, out ulong freeBytes, out _, out _))
+            {
+                throw new Exception($"Failed to check disk space on {root}, error code: {Marshal.GetLastWin32Error()}");
+            }
+
+            if ((long)freeBytes < requiredBytes)
+            {
+                string msg = $"Pas assez d'espace disque sur {root}.\n" +
+                             $"Il faut au moins {requiredBytes / (1024 * 1024 * 1024)} Go libres.\n" +
+                             $"Espace disponible : {freeBytes / (1024 * 1024 * 1024)} Go.";
+
+                MessageBox(IntPtr.Zero, msg, "Espace disque insuffisant", 0x10); // 0x10 = MB_ICONERROR
+                throw new Exception(msg);
+            }
+        }
+
+        private static void CleanupOldTempDirectories()
+        {
+            try
+            {
+                // Version sécurisée avec vérification de null
+                string? systemDrive = Path.GetPathRoot(Environment.SystemDirectory);
+
+                if (string.IsNullOrEmpty(systemDrive))
+                {
+                    Log("Could not determine system drive for cleanup");
+                    return;
+                }
+
+                try
+                {
+                    var directories = Directory.GetDirectories(systemDrive, "updater-temp-*");
+
+                    foreach (var dir in directories)
+                    {
+                        try
+                        {
+                            if (Directory.Exists(dir) &&
+                                Directory.GetCreationTime(dir) < DateTime.Now.AddHours(-1))
+                            {
+                                try
+                                {
+                                    Directory.Delete(dir, true);
+                                    Log($"Cleaned old temp dir: {dir}");
+                                }
+                                catch (Exception ex)
+                                {
+                                    Log($"Failed to delete {dir}: {ex.Message}");
+                                    MarkForDeletionOnReboot(dir);
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Log($"Error processing directory {dir}: {ex.Message}");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log($"Error scanning directories: {ex.Message}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"Error in old temp cleanup: {ex.Message}");
+            }
+        }
+
         private static bool ValidateArguments(string[] args)
         {
             if (args.Length < 2)
@@ -105,6 +333,18 @@ namespace DolphinUpdater
                 LogError("Install directory does not exist");
                 return false;
             }
+
+            // Vérification supplémentaire
+            try
+            {
+                Path.GetFullPath(args[1]); // Valide le chemin
+            }
+            catch
+            {
+                LogError("Invalid install path");
+                return false;
+            }
+
             return true;
         }
 
@@ -115,7 +355,7 @@ namespace DolphinUpdater
 
             if (!hasScoop)
             {
-                Log("Scoop is not installed. Install it now? (install Aria2 and Rcloud to faster download) (y/n)");
+                Log("Scoop is not installed. Install it now? (install Aria2 and Rcloud to faster download on SSD only) (y/n)");
                 if (Console.ReadKey(true).Key == ConsoleKey.Y)
                 {
                     await RunPowerShell(@"Set-ExecutionPolicy RemoteSigned -Scope CurrentUser -Force; iwr get.scoop.sh -UseBasicParsing | iex");
@@ -208,34 +448,72 @@ namespace DolphinUpdater
         {
             try
             {
+                AppDomain.CurrentDomain.ProcessExit += (s, e) => CleanupTempDirectory();
+                Console.CancelKeyPress += (s, e) =>
+                {
+                    CleanupTempDirectory();
+                    e.Cancel = true;
+                };
+
+
                 Log("Starting update process...");
+
+                
 
                 // 1. Close running Dolphin instances
                 CloseDolphin();
 
-                // 2. Prepare temp directory
+                string dolphinExe = Path.Combine(installPath, "Dolphin.exe");
+                if (!File.Exists(dolphinExe))
+                    throw new Exception($"Dolphin.exe not found in install path: {installPath}");
+
+                //4. HDD or SSD
+                bool useHttpOnly = IsHDD(installPath);
+
+                // 3bis. Update SD card avant tout
+                await UpdateSdIfNeeded("https://update.pplusfr.org/update.json");
+
+                // 3. Prepare temp directory
                 PrepareTempDirectory();
 
-                // 3. Download update package
-                await DownloadUpdatePackage(downloadUrl);
+                // Vérifier l’espace disque requis dynamiquement
+                long estimatedZipSize = GetContentLength(downloadUrl).GetAwaiter().GetResult();
+                if (estimatedZipSize <= 0)
+                    estimatedZipSize = 6L * 1024 * 1024 * 1024; // fallback: 6 Go si HEAD échoue
 
-                // 4. Extract update
+                long requiredSpace = (long)(estimatedZipSize * 2.5);
+                CheckDiskSpace(AppContext.BaseDirectory, requiredSpace);
+
+                // 2.1 Ensuite faire le process classique du .zip
+                zipPath = Path.Combine(tempPath, "update.zip");
+                await DownloadWithHttpClient(downloadUrl, zipPath);
+
+                // 5. Extract update
                 ExtractUpdatePackage();
 
-                // 5. Apply update (preserving config files)
+                await Task.Delay(70);
+
+                // 6. Apply update (preserving config files)
                 ApplyUpdate();
 
-                // 6. Launch Dolphin
+                try { if (File.Exists(zipPath)) File.Delete(zipPath); } catch { }
+
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+
+                // 7. Launch Dolphin
                 LaunchDolphin();
-                await Task.Delay(1000);
-               
+                await Task.Delay(500);
+
+                Environment.Exit(0);
+
 
                 Log("Update completed successfully!");
             }
             finally
             {
-                // 7. Cleanup
-                CleanupTempDirectory();
+                try { CleanupTempDirectory(); }
+                catch { }
             }
         }
 
@@ -243,11 +521,18 @@ namespace DolphinUpdater
         {
             try
             {
+                string exeDir = Path.GetDirectoryName(Process.GetCurrentProcess().MainModule!.FileName)!;
+
+                // Vérification espace disque (12 Go requis)
+                tempPath = Path.Combine(exeDir, "updater-temp");
+
+
                 if (Directory.Exists(tempPath))
                     Directory.Delete(tempPath, true);
 
                 Directory.CreateDirectory(tempPath);
-                Log($"Created temp directory: {tempPath}");
+                zipPath = Path.Combine(tempPath, "update.zip");
+                Log($"Created temp directory next to actual Updater.exe: {tempPath}");
             }
             catch (Exception ex)
             {
@@ -255,95 +540,35 @@ namespace DolphinUpdater
             }
         }
 
-        private static async Task DownloadUpdatePackage(string downloadUrl)
+        private static async Task DownloadUpdatePackage(string url, string outputPath)
         {
-            Log($"Downloading update from: {downloadUrl}");
-
-            if (File.Exists(zipPath))
-            {
-                Log("Deleting existing update.zip to avoid conflict...");
-                File.Delete(zipPath);
-            }
-
-            // aria2c first
-            if (await TryDownloadWithTool("aria2c", $"-x 16 -s 16 -o \"{Path.GetFileName(zipPath)}\" \"{downloadUrl}\"", tempPath))
-                return;
-
-            // rclone fallback
-            if (await TryDownloadWithTool("rclone", $"copyurl \"{downloadUrl}\" \"{Path.GetFileName(zipPath)}\" --multi-thread-streams=8 -P", tempPath))
-                return;
-
-            // http client
-            Log("Falling back to HTTP...");
-            await DownloadWithHttpClient(downloadUrl, zipPath);
-        }
-
-
-        private static async Task<bool> TryDownloadWithTool(string toolName, string arguments, string workingDir)
-        {
-            if (!IsToolAvailable(toolName)) return false;
-
-            Log($"Attempting download with {toolName}...");
-
+            // si tu veux supporter aria2 / rclone / http, tu choisis ici
             try
             {
-                // Ajoute automatiquement -d pour aria2c
-                if (toolName == "aria2c" && !arguments.Contains("-d"))
-                {
-                    arguments = $"-d \"{workingDir}\" {arguments}";
-                }
-
-                using var process = new Process
-                {
-                    StartInfo = new ProcessStartInfo
-                    {
-                        FileName = toolName,
-                        Arguments = arguments,
-                        WorkingDirectory = workingDir,
-                        UseShellExecute = false,
-                        RedirectStandardOutput = true,
-                        RedirectStandardError = true,
-                        CreateNoWindow = true
-                    }
-                };
-
-                process.OutputDataReceived += (s, e) => { if (!string.IsNullOrWhiteSpace(e.Data)) Log($"[{toolName}] {e.Data}"); };
-                process.ErrorDataReceived += (s, e) => { if (!string.IsNullOrWhiteSpace(e.Data)) LogError($"[{toolName} ERROR] {e.Data}"); };
-
-                process.Start();
-                process.BeginOutputReadLine();
-                process.BeginErrorReadLine();
-
-                await process.WaitForExitAsync();
-
-                if (File.Exists(zipPath) && new FileInfo(zipPath).Length > 0)
-                {
-                    Log($"Download succeeded using {toolName}");
-                    return true;
-                }
-                else
-                {
-                    LogError($"{toolName} ran but file was not created correctly.");
-                }
+                Log($"Downloading update (zip) from: {url}");
+                await DownloadWithHttpClient(url, outputPath); // exemple avec HTTP direct
             }
             catch (Exception ex)
             {
-                LogError($"Download with {toolName} failed: {ex.Message}");
+                throw new Exception($"Download failed: {ex.Message}", ex);
             }
-
-            return false;
         }
-
 
         private static async Task DownloadWithHttpClient(string url, string outputPath)
         {
-            Log("Falling back to HttpClient...");
+            Log("Downloading via HTTP (single progress bar)...");
 
             int retryCount = 0;
             while (retryCount < MAX_DOWNLOAD_RETRIES)
             {
                 try
                 {
+
+                    // 🔹 Vérifie toujours que le dossier existe
+                    var dir = Path.GetDirectoryName(outputPath)!;
+                    if (!Directory.Exists(dir))
+                        Directory.CreateDirectory(dir);
+
                     using var response = await httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
                     response.EnsureSuccessStatusCode();
 
@@ -356,20 +581,31 @@ namespace DolphinUpdater
                     var buffer = new byte[81920];
                     long totalRead = 0;
                     int read;
+                    var sw = Stopwatch.StartNew();
+
                     while ((read = await httpStream.ReadAsync(buffer)) > 0)
                     {
                         await fileStream.WriteAsync(buffer.AsMemory(0, read));
                         totalRead += read;
+
                         if (canReportProgress)
                         {
-                            Console.Write($"\rDownloading... {totalRead / 1024 / 1024}MB / {total / 1024 / 1024}MB ({(int)((double)totalRead / total * 100)}%)");
+                            double percent = (double)totalRead / total * 100;
+                            double speed = totalRead / 1024d / 1024d / sw.Elapsed.TotalSeconds;
+
+                            int barLength = 50;
+                            int filled = (int)(percent / 100 * barLength);
+                            string bar = new string('#', filled) + new string('-', barLength - filled);
+
+                            Console.Write($"\r[{bar}] {percent:0.0}%  {totalRead / 1024 / 1024}MB / {total / 1024 / 1024}MB  ({speed:0.0} MB/s)   ");
                         }
                         else
                         {
-                            Console.Write($"\rDownloading... {totalRead / 1024 / 1024}MB");
+                            Console.Write($"\rDownloaded {totalRead / 1024 / 1024}MB");
                         }
                     }
-                    Console.WriteLine();
+
+                    Console.WriteLine("\nDownload complete!");
                     return;
                 }
                 catch (Exception ex)
@@ -417,17 +653,14 @@ namespace DolphinUpdater
         {
             Log("Applying update...");
 
-            // Find the actual Dolphin folder in the extracted files
-            dolphinPath = FindDolphinPath() ?? tempPath;
 
-            // 6 Go requis
-            long requiredSpace = 6L * 1024 * 1024 * 1024;
-            CheckDiskSpace(dolphinPath, requiredSpace);
-
-            Log("Sufficient disk space available. Continuing update...");
+            // Trouver Dolphin dans le package extrait
+            dolphinPath = FindDolphinPath(tempPath) ?? tempPath;
 
             try
             {
+
+
                 // Copy all files except preserved ones
                 foreach (var sourceFile in Directory.GetFiles(dolphinPath))
                 {
@@ -459,16 +692,16 @@ namespace DolphinUpdater
             }
         }
 
-        private static string? FindDolphinPath()
+        private static string? FindDolphinPath(string basePath)
         {
             try
             {
-                foreach (var file in Directory.EnumerateFiles(tempPath, "dolphin.exe", SearchOption.AllDirectories))
+                foreach (var file in Directory.EnumerateFiles(basePath, "dolphin.exe", SearchOption.AllDirectories))
                     return Path.GetDirectoryName(file);
             }
             catch (Exception ex)
             {
-                Log($"Warning: Could not locate Dolphin.exe in package: {ex.Message}");
+                Log($"Warning: Could not locate Dolphin.exe in {basePath}: {ex.Message}");
             }
 
             return null;
@@ -489,6 +722,7 @@ namespace DolphinUpdater
             }
         }
 
+
         private static void LaunchDolphin()
         {
             var dolphinExe = Path.Combine(installPath, "Dolphin.exe");
@@ -501,11 +735,12 @@ namespace DolphinUpdater
             try
             {
                 Log("Launching Dolphin...");
+
                 Process.Start(new ProcessStartInfo
                 {
                     FileName = "cmd.exe",
-                    Arguments = "/C start \"\" \"./Dolphin.exe\"",
-                    WorkingDirectory = installPath, // ou installPath
+                    Arguments = "/C start \"\" \"Dolphin.exe\"",
+                    WorkingDirectory = installPath,
                     CreateNoWindow = true,
                     UseShellExecute = false
                 });
@@ -516,6 +751,46 @@ namespace DolphinUpdater
             }
         }
 
+
+        private static void ScheduleDelayedDeletion(string path)
+        {
+            try
+            {
+                string bat = Path.Combine(Path.GetTempPath(), $"cleanup_{Guid.NewGuid():N}.cmd");
+
+                // On met le chemin en argument pour éviter toute ambiguïté de quoting
+                string script = @"@echo off
+chcp 65001>nul
+setlocal enabledelayedexpansion
+set ""TARGET=%~1""
+
+REM quelques tentatives au cas où un handle se libère avec un léger délai
+for /L %%i in (1,1,30) do (
+  rmdir /s /q ""!TARGET!"" 2>nul && goto :done
+  ping -n 2 127.0.0.1>nul
+)
+:done
+del ""%~f0""";
+
+                File.WriteAllText(bat, script, new ASCIIEncoding());
+
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "cmd.exe",
+                    Arguments = $"/d /c \"\"{bat}\" \"{path}\"\"",
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    WindowStyle = ProcessWindowStyle.Hidden,
+                    RedirectStandardOutput = false,
+                    RedirectStandardError = false
+                };
+                Process.Start(psi);
+            }
+            catch (Exception ex)
+            {
+                Log($"Échec suppression différée: {ex.Message}");
+            }
+        }
         private static void CloseDolphin()
         {
             try
@@ -533,7 +808,7 @@ namespace DolphinUpdater
                 };
                 process.Start();
                 process.WaitForExit();
-                Thread.Sleep(1000); // Wait for process to fully terminate
+                Thread.Sleep(500); // Wait for process to fully terminate
             }
             catch (Exception ex)
             {
@@ -543,26 +818,45 @@ namespace DolphinUpdater
 
         private static void CleanupTempDirectory()
         {
-            GC.Collect();
-            GC.WaitForPendingFinalizers();
+            if (string.IsNullOrEmpty(tempPath)) return;
 
-            for (int i = 0; i < MAX_TEMP_CLEANUP_RETRIES; i++)
+            // Méthode 1: Suppression standard immédiate
+            try
             {
-                try
+                if (Directory.Exists(tempPath))
                 {
-                    if (Directory.Exists(tempPath))
-                    {
-                        Directory.Delete(tempPath, true);
-                    }
+                    Directory.Delete(tempPath, true);
+                    Log("Suppression normale réussie");
                     return;
                 }
-                catch
+            }
+            catch (Exception ex)
+            {
+                Log($"Échec suppression normale: {ex.Message}");
+            }
+
+            // Méthode 2: Suppression différée en arrière-plan (invisible)
+            try
+            {
+                if (Directory.Exists(tempPath))
                 {
-                    Thread.Sleep(TEMP_CLEANUP_DELAY_MS);
+                    ScheduleDelayedDeletion(tempPath);
+                    Log("Suppression différée programmée");
+                    return;
                 }
             }
-        }
+            catch (Exception ex)
+            {
+                Log($"Échec suppression différée: {ex.Message}");
+            }
 
+            // Méthode 3: Si tout échoue, suppression au reboot
+            if (Directory.Exists(tempPath))
+            {
+                MarkForDeletionOnReboot(tempPath);
+                Log("Dossier marqué pour suppression au reboot");
+            }
+        }
 
 
         private static bool IsToolAvailable(string tool)
@@ -602,8 +896,153 @@ namespace DolphinUpdater
             Console.Error.WriteLine($"[{DateTime.Now:HH:mm:ss}] ERROR: {message}");
         }
 
-       
-       
+        private static async Task UpdateSdIfNeeded(string manifestUrl)
+        {
+            Log("Checking SD card update...");
 
+            using var http = new HttpClient();
+            var json = await http.GetStringAsync(manifestUrl);
+
+            var doc = JsonDocument.Parse(json).RootElement;
+
+            string hash = doc.GetProperty("sd-hash").GetString()!;
+            string url = doc.GetProperty("download-sd").GetString()!;
+
+            string exeDir = Path.GetDirectoryName(Environment.ProcessPath)!;
+            string sdPath = Path.Combine(exeDir, "User", "Wii", "sd.raw");
+
+            // Vérifier si déjà à jour
+            if (File.Exists(sdPath))
+            {
+                string currentHash = ComputeSHA256(sdPath);
+                if (string.Equals(currentHash, hash, StringComparison.OrdinalIgnoreCase))
+                {
+                    Log("SD card already up to date.");
+                    return;
+                }
+            }
+
+            // Téléchargement
+            Log("SD card update...");
+            Directory.CreateDirectory(Path.GetDirectoryName(sdPath)!);
+
+            bool success =
+                await TryDownloadWithAria2(url, sdPath) ||
+                await TryDownloadWithRclone(url, sdPath);
+
+            if (!success)
+                await DownloadWithHttpClient(url, sdPath);
+
+            Log("SD card updated successfully.");
+        }
+
+
+        private static string ComputeSHA256(string filePath)
+        {
+            using var sha256 = SHA256.Create();
+            using var stream = File.OpenRead(filePath);
+            byte[] hash = sha256.ComputeHash(stream);
+            return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
+        }
+
+        private static async Task DownloadSdFile(string url, string destPath)
+        {
+            using var response = await httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
+            response.EnsureSuccessStatusCode();
+
+            using var fs = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None);
+            await response.Content.CopyToAsync(fs);
+        }
+
+        private static string ComputeFileHash(string filePath)
+        {
+            using var sha256 = SHA256.Create();
+            using var stream = File.OpenRead(filePath);
+            byte[] hash = sha256.ComputeHash(stream);
+            return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
+        }
+
+        private static async Task<bool> DownloadWithProcess(string exe, string args)
+        {
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = exe,
+                    Arguments = args,
+                    RedirectStandardOutput = false,
+                    RedirectStandardError = false,
+                    UseShellExecute = false,
+                    CreateNoWindow = false
+                };
+
+                using var proc = new Process { StartInfo = psi };
+
+                proc.OutputDataReceived += (s, e) =>
+                {
+                    if (!string.IsNullOrEmpty(e.Data))
+                        Log($"[{exe}] {e.Data}");
+                };
+
+                proc.ErrorDataReceived += (s, e) =>
+                {
+                    if (!string.IsNullOrEmpty(e.Data))
+                        LogError($"[{exe}] {e.Data}");
+                };
+
+                proc.Start();
+                proc.BeginOutputReadLine();
+                proc.BeginErrorReadLine();
+
+                await proc.WaitForExitAsync();
+
+                Log($"[{exe}] Exit code {proc.ExitCode}");
+                return proc.ExitCode == 0;
+            }
+            catch (Exception ex)
+            {
+                LogError($"ERROR: {exe} failed: {ex.Message}");
+                return false;
+            }
+        }
+
+        private static async Task<bool> TryDownloadWithAria2(string url, string dest)
+        {
+            string dir = Path.GetDirectoryName(dest)!;
+            string file = Path.GetFileName(dest);
+
+            var args = $"-x 16 -s 16 --allow-overwrite=true --dir \"{dir}\" -o \"{file}\" \"{url}\"";
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = "aria2c",
+                Arguments = args,
+                UseShellExecute = false,
+                RedirectStandardOutput = false, // laisse aria2 dessiner sa barre
+                RedirectStandardError = false,
+                CreateNoWindow = false
+            };
+
+            using var proc = Process.Start(psi)!;
+            await proc.WaitForExitAsync();
+            return proc.ExitCode == 0;
+        }
+
+        private static async Task<bool> TryDownloadWithRclone(string url, string dest)
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "rclone",
+                Arguments = $"copyurl \"{url}\" \"{dest}\" --auto-filename=false",
+                UseShellExecute = false,
+                RedirectStandardOutput = false,
+                RedirectStandardError = false,
+                CreateNoWindow = false
+            };
+
+            using var proc = Process.Start(psi)!;
+            await proc.WaitForExitAsync();
+            return proc.ExitCode == 0;
+        }
     }
 }

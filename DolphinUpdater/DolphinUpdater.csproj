@@ -37,11 +37,20 @@
     <Nullable>enable</Nullable>
     <PublishSingleFile>true</PublishSingleFile>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+
+	<ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+	<EnablePreviewFeatures>true</EnablePreviewFeatures>
+	<UseSystemTextJsonSourceGenerator>true</UseSystemTextJsonSourceGenerator>
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.PowerShell.SDK" Version="7.5.2" />
     <PackageReference Include="SharpCompress" Version="0.39.0" />
     <PackageReference Include="System.Buffers" Version="4.6.0" />
+    <PackageReference Include="System.Management" Version="9.0.8" />
+    <PackageReference Include="System.Text.Json" Version="8.0.6" />
+	<PackageReference Include="System.Text.Encodings.Web" Version="8.0.0" />
   </ItemGroup>
 
  <Target Name="CheckBundle" AfterTargets="Publish">
