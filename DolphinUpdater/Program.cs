@@ -249,17 +249,20 @@ namespace DolphinUpdater
 
             if (!GetDiskFreeSpaceEx(root, out ulong freeBytes, out _, out _))
             {
-                throw new Exception($"Failed to check disk space on {root}, error code: {Marshal.GetLastWin32Error()}");
+                throw new Exception($"Impossible de vérifier l'espace disque sur {root}, Error code: {Marshal.GetLastWin32Error()}");
             }
+
+            Log($"Free space on {root}: {freeBytes / (1024 * 1024 * 1024)} Go");
+            Log($"Espace required: {requiredBytes / (1024 * 1024 * 1024)} Go");
 
             if ((long)freeBytes < requiredBytes)
             {
                 string msg = $"Not enough free disk space on {root}.\n" +
-                             $"At least 8 GB is required \n" +
-                             $"Available: {freeBytes / (1024 * 1024 * 1024)} GB.";
+                             $"At least 8 GB is required.\n" +
+                             $"Available : {freeBytes / (1024 * 1024 * 1024)} Go.";
 
-                MessageBox(IntPtr.Zero, msg, "Espace disque insuffisant", 0x10); // 0x10 = MB_ICONERROR
-                throw new Exception(msg);
+                MessageBox(IntPtr.Zero, msg, "Not enough free disk space", 0x10); // 0x10 = MB_ICONERROR
+                Environment.Exit(1);
             }
         }
 
@@ -470,15 +473,15 @@ namespace DolphinUpdater
                 //4. HDD or SSD
                 bool useHttpOnly = IsHDD(installPath);
 
+                // Vérifier l’espace disque requis dynamiquement
+                long requiredSpace = 8L * 1024 * 1024 * 1024; // 8 Go
+                CheckDiskSpace(installPath, requiredSpace);
+
                 // 3bis. Update SD card avant tout
                 await UpdateSdIfNeeded("https://update.pplusfr.org/update.json");
 
                 // 3. Prepare temp directory
                 PrepareTempDirectory();
-
-                // Vérifier l’espace disque requis dynamiquement
-                long requiredSpace = 8L * 1024 * 1024 * 1024;
-                CheckDiskSpace(AppContext.BaseDirectory, requiredSpace);
 
                 // 2.1 Ensuite faire le process classique du .zip
                 zipPath = Path.Combine(tempPath, "update.zip");
