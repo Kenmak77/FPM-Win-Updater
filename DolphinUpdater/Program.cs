@@ -254,9 +254,9 @@ namespace DolphinUpdater
 
             if ((long)freeBytes < requiredBytes)
             {
-                string msg = $"Pas assez d'espace disque sur {root}.\n" +
-                             $"Il faut au moins {requiredBytes / (1024 * 1024 * 1024)} Go libres.\n" +
-                             $"Espace disponible : {freeBytes / (1024 * 1024 * 1024)} Go.";
+                string msg = $"Not enough free disk space on {root}.\n" +
+                             $"At least 8 GB is required \n" +
+                             $"Available: {freeBytes / (1024 * 1024 * 1024)} GB.";
 
                 MessageBox(IntPtr.Zero, msg, "Espace disque insuffisant", 0x10); // 0x10 = MB_ICONERROR
                 throw new Exception(msg);
@@ -477,11 +477,7 @@ namespace DolphinUpdater
                 PrepareTempDirectory();
 
                 // Vérifier l’espace disque requis dynamiquement
-                long estimatedZipSize = GetContentLength(downloadUrl).GetAwaiter().GetResult();
-                if (estimatedZipSize <= 0)
-                    estimatedZipSize = 6L * 1024 * 1024 * 1024; // fallback: 6 Go si HEAD échoue
-
-                long requiredSpace = (long)(estimatedZipSize * 2.5);
+                long requiredSpace = 8L * 1024 * 1024 * 1024;
                 CheckDiskSpace(AppContext.BaseDirectory, requiredSpace);
 
                 // 2.1 Ensuite faire le process classique du .zip
